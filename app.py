@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 CSV_PATH = Path(__file__).resolve().parent / "samples.csv"
 HELSINKI_CENTRAL = (60.1708, 24.9414)
@@ -136,30 +137,26 @@ def inject_chrome() -> None:
         div[data-testid="stStatusWidget"] {display: none;}
         #stDecoration {display: none;}
 
-        [data-testid="stDeckGlJsonChart"],
-        [data-testid="stMap"] {
-            width: 220px !important;
-            max-width: 220px !important;
-            height: 220px !important;
-            margin-left: auto;
-            border-radius: 10px;
-            overflow: hidden;
-            border: 1px solid #d9d9d9;
-            filter: invert(1) hue-rotate(180deg) brightness(1.08) contrast(0.92) saturate(1.25);
-        }
-        [data-testid="stDeckGlJsonChart"] canvas,
-        [data-testid="stMap"] canvas {
-            border-radius: 10px;
+        .hours-line {
+            text-align: left;
+            margin: 0 0 0.35rem 0;
         }
         .nav-link {
+            display: inline-block;
             font-weight: 800;
             color: #4285F4 !important;
             text-decoration: none;
             font-size: 0.95rem;
+            text-align: left;
+            margin: 0 0 0.35rem 0;
         }
-        .hours-line {
-            text-align: right;
-            margin-bottom: 0.35rem;
+        .lead-map-box {
+            width: 140px;
+            height: 140px;
+            max-width: 140px;
+            overflow: hidden;
+            border-radius: 10px;
+            border: 1px solid #d9d9d9;
         }
         </style>
         """,
@@ -279,6 +276,67 @@ def walking_minutes(meters: float) -> int:
 
 def maps_url(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
+
+
+def render_osm_pin_map(lat: float, lon: float, map_id: str) -> None:
+    safe_id = re.sub(r"[^a-zA-Z0-9]", "_", map_id)[:40] or "lead"
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1"/>
+      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+      <style>
+        html, body {{
+          margin: 0;
+          padding: 0;
+          width: 140px;
+          height: 140px;
+          overflow: hidden;
+          background: #f2efe9;
+        }}
+        #m_{safe_id} {{
+          width: 140px;
+          height: 140px;
+        }}
+        .osm-pin {{
+          width: 18px;
+          height: 18px;
+          background: #ea4335;
+          border: 2px solid #ffffff;
+          border-radius: 50% 50% 50% 0;
+          transform: rotate(-45deg);
+          box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+        }}
+      </style>
+    </head>
+    <body>
+      <div id="m_{safe_id}"></div>
+      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+      <script>
+        const map = L.map("m_{safe_id}", {{
+          zoomControl: false,
+          attributionControl: false,
+          dragging: true,
+          scrollWheelZoom: false
+        }}).setView([{lat:.6f}, {lon:.6f}], 16);
+        L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
+          maxZoom: 19
+        }}).addTo(map);
+        const pin = L.divIcon({{
+          className: "",
+          html: '<div class="osm-pin"></div>',
+          iconSize: [18, 18],
+          iconAnchor: [9, 18]
+        }});
+        L.marker([{lat:.6f}, {lon:.6f}], {{ icon: pin }}).addTo(map);
+        setTimeout(() => map.invalidateSize(), 80);
+      </script>
+    </body>
+    </html>
+    """
+    components.html(html, height=140, width=140, scrolling=False)
 
 
 def forget_old_table_state() -> None:
@@ -597,6 +655,8 @@ for idx, row in df.iterrows():
             "notes": notes,
             "lat": lat,
             "lon": lon,
+            "latitude": lat,
+            "longitude": lon,
             "distance_m": distance_m,
         }
     )
@@ -627,9 +687,9 @@ for lead in enriched_rows:
         st.session_state[notes_key] = lead["notes"]
 
     with st.container(border=True):
-        left_col, right_col = st.columns([1.3, 1.0])
+        c1, c2 = st.columns([1.3, 1.0])
 
-        with left_col:
+        with c1:
             st.markdown(f"### {lead['name']}")
             st.markdown(f"📍 Address: {lead['address']}, Helsinki")
             st.markdown(f"🏙️ District: {lead['district']}")
@@ -657,38 +717,18 @@ for lead in enriched_rows:
                 use_container_width=True,
             )
 
-        with right_col:
+        with c2:
             st.markdown(
                 f"<div class='hours-line'>⏱️ Visiting Hours: <code>{lead['hours']}</code></div>",
                 unsafe_allow_html=True,
             )
-            nav_href = maps_url(lead["lat"], lead["lon"])
+            nav_href = maps_url(lead["latitude"], lead["longitude"])
             st.markdown(
-                f"<div style='text-align:right;margin:0.15rem 0 0.6rem 0;'>"
-                f"<a class='nav-link' href='{nav_href}' target='_blank' rel='noopener noreferrer'>"
-                f"🗺️ Navigation</a></div>",
+                f'<a class="nav-link" href="{nav_href}" target="_blank" rel="noopener noreferrer">'
+                f"🗺️ Navigation</a>",
                 unsafe_allow_html=True,
             )
-            st.markdown('<div class="lead-map-box">', unsafe_allow_html=True)
-            map_df = pd.DataFrame({"lat": [lead["lat"]], "lon": [lead["lon"]]})
-            map_kwargs = {
-                "zoom": 15,
-                "height": 220,
-                "color": "#4285F4",
-                "size": 120,
-            }
-            try:
-                st.map(
-                    map_df,
-                    latitude="lat",
-                    longitude="lon",
-                    use_container_width=False,
-                    width=220,
-                    **map_kwargs,
-                )
-            except TypeError:
-                st.map(map_df, **map_kwargs)
-            st.markdown("</div>", unsafe_allow_html=True)
+            render_osm_pin_map(lead["latitude"], lead["longitude"], uid)
 
         st.text_area(
             "✍️ Field Notes (e.g. Email, Mobile):",
@@ -706,7 +746,7 @@ for lead in enriched_rows:
             st.rerun()
 
 st.markdown("---")
-with st.expander("➕ Neuen Lead hinzufügen", expanded=False):
+with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
     st.caption("Neue Leads werden nicht in die CSV geschrieben, sondern live in den Link gelegt.")
     with st.form("add_lead_form", clear_on_submit=True):
         new_name = st.text_input("Company-Name")
