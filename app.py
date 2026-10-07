@@ -46,6 +46,45 @@ DISTRICT_ALIASES = {
     "Punavuori/Ullanlinna": ("punavuori", "ullanlinna", "punavuori/ullanlinna"),
 }
 
+KALLIO_STREETS = (
+    "linja",
+    "hameentie",
+    "helsinginkatu",
+    "vaasankatu",
+    "porthaninkatu",
+    "siltasaarenkatu",
+    "castreninkatu",
+    "kirstinkatu",
+    "fleminginkatu",
+    "alppikatu",
+)
+
+TOOLO_STREETS = (
+    "runeberginkatu",
+    "topeliuksenkatu",
+    "toolonkatu",
+    "arkadiankatu",
+    "caloniuksenkatu",
+    "mechelininkatu",
+    "sibeliuksenkatu",
+)
+
+CENTRAL_STREETS = (
+    "aleksanterinkatu",
+    "kaivokatu",
+    "lonnrotinkatu",
+    "bulevardi",
+    "yronkatu",
+    "yrjonkatu",
+    "simonkatu",
+    "fredrikinkatu",
+    "urhokehtosenkatu",
+    "kekkosenkatu",
+    "keskuskatu",
+    "pohjoisesplanadi",
+    "etelaesplanadi",
+)
+
 KNOWN_COORDS = (
     ("hämeentie 38", 60.1852, 24.9602),
     ("hameentie 38", 60.1852, 24.9602),
@@ -225,6 +264,30 @@ def normalize_addr(address: str) -> str:
     return text
 
 
+def fold_fi(text: str) -> str:
+    return (
+        text.lower()
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("å", "a")
+        .replace("é", "e")
+    )
+
+
+def first_street_number(address: str) -> int | None:
+    match = re.search(r"(\d+)", normalize_addr(address))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def street_in_address(haystack: str, streets: tuple[str, ...]) -> bool:
+    return any(street in haystack for street in streets)
+
+
 def coords_for_address(address: str, lat_val: object = None, lon_val: object = None) -> tuple[float, float]:
     lat = parse_float(lat_val)
     lon = parse_float(lon_val)
@@ -239,15 +302,24 @@ def coords_for_address(address: str, lat_val: object = None, lon_val: object = N
 
 
 def infer_district(address: str, district: str = "") -> str:
-    if clean_text(district):
-        return clean_text(district)
-    low = normalize_addr(address).lower()
-    if any(part in low for part in ("hämeentie", "hameentie", "helsinginkatu", "vaasankatu")):
-        return "Kallio"
-    if any(part in low for part in ("mannerheimintie", "aleksanterinkatu", "kaivokatu")):
+    haystack = fold_fi(normalize_addr(address))
+    if not haystack:
+        return clean_text(district) or "Central District (Kluuvi/Kamppi)"
+
+    if "mannerheimintie" in haystack:
+        number = first_street_number(address)
+        if number is not None and number > 30:
+            return "Töölö"
         return "Central District (Kluuvi/Kamppi)"
-    if any(part in low for part in ("runeberginkatu", "topeliuksenkatu")):
+
+    if street_in_address(haystack, KALLIO_STREETS):
+        return "Kallio"
+    if street_in_address(haystack, TOOLO_STREETS):
         return "Töölö"
+    if street_in_address(haystack, CENTRAL_STREETS):
+        return "Central District (Kluuvi/Kamppi)"
+    if "helsinki" in haystack or clean_text(district):
+        return clean_text(district) or "Central District (Kluuvi/Kamppi)"
     return "Central District (Kluuvi/Kamppi)"
 
 
