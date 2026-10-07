@@ -10,11 +10,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 CSV_PATH = Path(__file__).resolve().parent / "samples.csv"
 HELSINKI_CENTRAL = (60.1708, 24.9414)
-WALK_METERS_PER_MIN = 80.0  # ~4.8 km/h
+WALK_METERS_PER_MIN = 80.0
 SYNC_PARAM = "d"
 
 STATUSES = [
@@ -155,17 +154,21 @@ def inject_chrome() -> None:
             text-align: left;
             margin: 0.1rem 0 0.4rem 0;
         }
-        .lead-map-box,
-        div[data-testid="stIFrame"],
-        iframe[title="st.iframe"] {
-            width: 140px !important;
-            max-width: 140px !important;
-            height: 140px !important;
-            margin-left: 0 !important;
-            margin-right: auto !important;
+        .lead-map-box {
+            display: block;
+            width: 140px;
+            height: 140px;
+            max-width: 140px;
             overflow: hidden;
             border-radius: 10px;
             border: 1px solid #d9d9d9;
+        }
+        .lead-map-box img {
+            display: block;
+            width: 140px;
+            height: 140px;
+            object-fit: cover;
+            border: 0;
         }
         </style>
         """,
@@ -283,32 +286,26 @@ def walking_minutes(meters: float) -> int:
     return max(1, int(round(meters / WALK_METERS_PER_MIN)))
 
 
-def maps_url(lat: float, lon: float) -> str:
+def native_geo_url(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
 
 
-def render_osm_pin_map(lat: float, lon: float, map_id: str) -> None:
-    _ = map_id
-    pad = 0.0024
-    west, south, east, north = lon - pad, lat - pad, lon + pad, lat + pad
-    src = (
-        "https://www.openstreetmap.org/export/embed.html"
-        f"?bbox={west:.6f}%2C{south:.6f}%2C{east:.6f}%2C{north:.6f}"
-        f"&layer=mapnik&marker={lat:.6f}%2C{lon:.6f}"
+def static_map_url(lat: float, lon: float) -> str:
+    return (
+        f"https://static-maps.yandex.ru/1.x/?ll={lon:.6f},{lat:.6f}"
+        f"&z=16&size=300,140&l=map&pt={lon:.6f},{lat:.6f},pm2rdm"
     )
-    html = f"""
-    <div class="lead-map-box" style="width:140px;height:140px;overflow:hidden;border:0;margin:0;padding:0;">
-      <iframe
-        src="{src}"
-        width="140"
-        height="140"
-        style="border:0;width:140px;height:140px;margin:0;padding:0;display:block;"
-        loading="lazy"
-        referrerpolicy="no-referrer-when-downgrade">
-      </iframe>
-    </div>
-    """
-    components.html(html, height=140, width=140, scrolling=False)
+
+
+def render_static_map(lat: float, lon: float) -> None:
+    geo_url = native_geo_url(lat, lon)
+    image_url = static_map_url(lat, lon)
+    st.markdown(
+        f'<a class="lead-map-box" href="{geo_url}" target="_blank" rel="noopener noreferrer">'
+        f'<img src="{image_url}" alt="Map" width="140" height="140" />'
+        f"</a>",
+        unsafe_allow_html=True,
+    )
 
 
 def forget_old_table_state() -> None:
@@ -625,8 +622,6 @@ for idx, row in df.iterrows():
             "hours": hours,
             "status": status,
             "notes": notes,
-            "lat": lat,
-            "lon": lon,
             "latitude": lat,
             "longitude": lon,
             "distance_m": distance_m,
@@ -700,13 +695,13 @@ for lead in enriched_rows:
                 f"<div class='hours-line'>⏱️ Visiting Hours: <code>{lead['hours']}</code></div>",
                 unsafe_allow_html=True,
             )
-            nav_href = maps_url(lead["latitude"], lead["longitude"])
+            geo_url = native_geo_url(lead["latitude"], lead["longitude"])
             st.markdown(
-                f'<a class="nav-link" href="{nav_href}" target="_blank" rel="noopener noreferrer">'
+                f'<a class="nav-link" href="{geo_url}" target="_blank" rel="noopener noreferrer">'
                 f"🗺️ Navigation</a>",
                 unsafe_allow_html=True,
             )
-            render_osm_pin_map(lead["latitude"], lead["longitude"], uid)
+            render_static_map(lead["latitude"], lead["longitude"])
 
         st.text_area(
             "✍️ Field Notes (e.g. Email, Mobile):",
