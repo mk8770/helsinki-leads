@@ -141,6 +141,11 @@ def inject_chrome() -> None:
             text-align: left;
             margin: 0 0 0.35rem 0;
         }
+        .addr-line, .district-line {
+            display: block;
+            margin: 0 0 0.2rem 0;
+            line-height: 1.35;
+        }
         .nav-link {
             display: inline-block;
             font-weight: 800;
@@ -148,12 +153,16 @@ def inject_chrome() -> None:
             text-decoration: none;
             font-size: 0.95rem;
             text-align: left;
-            margin: 0 0 0.35rem 0;
+            margin: 0.1rem 0 0.4rem 0;
         }
-        .lead-map-box {
-            width: 140px;
-            height: 140px;
-            max-width: 140px;
+        .lead-map-box,
+        div[data-testid="stIFrame"],
+        iframe[title="st.iframe"] {
+            width: 140px !important;
+            max-width: 140px !important;
+            height: 140px !important;
+            margin-left: 0 !important;
+            margin-right: auto !important;
             overflow: hidden;
             border-radius: 10px;
             border: 1px solid #d9d9d9;
@@ -279,62 +288,25 @@ def maps_url(lat: float, lon: float) -> str:
 
 
 def render_osm_pin_map(lat: float, lon: float, map_id: str) -> None:
-    safe_id = re.sub(r"[^a-zA-Z0-9]", "_", map_id)[:40] or "lead"
+    _ = map_id
+    pad = 0.0024
+    west, south, east, north = lon - pad, lat - pad, lon + pad, lat + pad
+    src = (
+        "https://www.openstreetmap.org/export/embed.html"
+        f"?bbox={west:.6f}%2C{south:.6f}%2C{east:.6f}%2C{north:.6f}"
+        f"&layer=mapnik&marker={lat:.6f}%2C{lon:.6f}"
+    )
     html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8"/>
-      <meta name="viewport" content="width=device-width, initial-scale=1"/>
-      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-      <style>
-        html, body {{
-          margin: 0;
-          padding: 0;
-          width: 140px;
-          height: 140px;
-          overflow: hidden;
-          background: #f2efe9;
-        }}
-        #m_{safe_id} {{
-          width: 140px;
-          height: 140px;
-        }}
-        .osm-pin {{
-          width: 18px;
-          height: 18px;
-          background: #ea4335;
-          border: 2px solid #ffffff;
-          border-radius: 50% 50% 50% 0;
-          transform: rotate(-45deg);
-          box-shadow: 0 1px 4px rgba(0,0,0,0.35);
-        }}
-      </style>
-    </head>
-    <body>
-      <div id="m_{safe_id}"></div>
-      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-      <script>
-        const map = L.map("m_{safe_id}", {{
-          zoomControl: false,
-          attributionControl: false,
-          dragging: true,
-          scrollWheelZoom: false
-        }}).setView([{lat:.6f}, {lon:.6f}], 16);
-        L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
-          maxZoom: 19
-        }}).addTo(map);
-        const pin = L.divIcon({{
-          className: "",
-          html: '<div class="osm-pin"></div>',
-          iconSize: [18, 18],
-          iconAnchor: [9, 18]
-        }});
-        L.marker([{lat:.6f}, {lon:.6f}], {{ icon: pin }}).addTo(map);
-        setTimeout(() => map.invalidateSize(), 80);
-      </script>
-    </body>
-    </html>
+    <div class="lead-map-box" style="width:140px;height:140px;overflow:hidden;border:0;margin:0;padding:0;">
+      <iframe
+        src="{src}"
+        width="140"
+        height="140"
+        style="border:0;width:140px;height:140px;margin:0;padding:0;display:block;"
+        loading="lazy"
+        referrerpolicy="no-referrer-when-downgrade">
+      </iframe>
+    </div>
     """
     components.html(html, height=140, width=140, scrolling=False)
 
@@ -691,8 +663,14 @@ for lead in enriched_rows:
 
         with c1:
             st.markdown(f"### {lead['name']}")
-            st.markdown(f"📍 Address: {lead['address']}, Helsinki")
-            st.markdown(f"🏙️ District: {lead['district']}")
+            st.markdown(
+                f"<div class='addr-line'>📍 Address: {lead['address']}, Helsinki</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div class='district-line'>🏙️ District: {lead['district']}</div>",
+                unsafe_allow_html=True,
+            )
             if disable_distance:
                 st.markdown("🚶‍♂️ Distance to you: N/A")
             else:
