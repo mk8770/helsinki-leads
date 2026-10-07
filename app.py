@@ -241,16 +241,14 @@ def coords_for_address(address: str, lat_val: object = None, lon_val: object = N
 def infer_district(address: str, district: str = "") -> str:
     if clean_text(district):
         return clean_text(district)
-    low = normalize_addr(address)
-    if any(part in low for part in ("hämeentie", "hameentie", "vaasankatu")):
+    low = normalize_addr(address).lower()
+    if any(part in low for part in ("hämeentie", "hameentie", "helsinginkatu", "vaasankatu")):
         return "Kallio"
-    if any(part in low for part in ("topeliuksenkatu", "museokatu")):
-        return "Töölö"
-    if any(part in low for part in ("fredrikinkatu", "iso roobertinkatu", "tehtaankatu")):
-        return "Punavuori/Ullanlinna"
-    if any(part in low for part in ("pohjoisesplanadi", "aleksanterinkatu", "mannerheimintie")):
+    if any(part in low for part in ("mannerheimintie", "aleksanterinkatu", "kaivokatu")):
         return "Central District (Kluuvi/Kamppi)"
-    return ""
+    if any(part in low for part in ("runeberginkatu", "topeliuksenkatu")):
+        return "Töölö"
+    return "Central District (Kluuvi/Kamppi)"
 
 
 def normalize_status(raw: str) -> str:
@@ -515,7 +513,7 @@ def persist_lead(df: pd.DataFrame, cols: dict[str, str], row_idx: int, status: s
     write_sync({"v": 2, "o": overrides, "a": added})
 
 
-def append_url_lead(name: str, address: str, website: str, hours: str, district: str) -> None:
+def append_url_lead(name: str, address: str, website: str, hours: str) -> None:
     sync = read_sync()
     added = list(sync["a"])
     added.append(
@@ -524,7 +522,7 @@ def append_url_lead(name: str, address: str, website: str, hours: str, district:
             "ad": address,
             "ws": website,
             "hr": hours,
-            "di": "" if district == "All Districts" else district,
+            "di": infer_district(address),
         }
     )
     write_sync({"v": 2, "o": sync["o"], "a": added})
@@ -721,18 +719,17 @@ st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
     st.caption("Neue Leads werden nicht in die CSV geschrieben, sondern live in den Link gelegt.")
     with st.form("add_lead_form", clear_on_submit=True):
-        new_name = st.text_input("Company-Name")
-        new_address = st.text_input("Street-Address")
-        new_link = st.text_input("Sample-Link")
-        new_hours = st.text_input("Visiting-Hours")
-        new_district = st.selectbox("District", options=DISTRICT_OPTIONS)
+        new_name = st.text_input("Name des Geschäfts / Firma")
+        new_address = st.text_input("Adresse (z.B. Hämeentie 38)")
+        new_link = st.text_input("Website / Demo-Link")
+        new_hours = st.text_input("Visiting Hours")
         submitted = st.form_submit_button("Lead zur Pipeline hinzufügen")
 
     if submitted:
         name = clean_text(new_name)
         address = clean_text(new_address)
         if not name or not address:
-            st.warning("Bitte Company-Name und Street-Address ausfüllen.")
+            st.warning("Bitte Name des Geschäfts und Adresse ausfüllen.")
         else:
             existing = {
                 (clean_text(row[cols["name"]]).lower(), normalize_addr(row[cols["address"]]))
@@ -746,7 +743,6 @@ with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
                     address,
                     clean_text(new_link),
                     clean_text(new_hours),
-                    new_district,
                 )
                 st.success("✅ Lead in den Link übernommen und in der Pipeline sichtbar.")
                 st.rerun()
