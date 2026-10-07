@@ -5,6 +5,7 @@ import io
 import json
 import math
 import re
+import urllib.parse
 import zlib
 from pathlib import Path
 
@@ -290,21 +291,19 @@ def native_geo_url(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
 
 
-def static_map_url(lat: float, lon: float) -> str:
-    return (
-        f"https://static-maps.yandex.ru/1.x/?ll={lon:.6f},{lat:.6f}"
-        f"&z=16&size=300,140&l=map&pt={lon:.6f},{lat:.6f},pm2rdm"
-    )
-
-
-def render_static_map(lat: float, lon: float) -> None:
-    geo_url = native_geo_url(lat, lon)
-    image_url = static_map_url(lat, lon)
-    st.markdown(
-        f'<a class="lead-map-box" href="{geo_url}" target="_blank" rel="noopener noreferrer">'
-        f'<img src="{image_url}" alt="Map" width="140" height="140" />'
-        f"</a>",
-        unsafe_allow_html=True,
+def render_google_map(address: str) -> None:
+    query = urllib.parse.quote(f"{address}, Helsinki, Finland")
+    st.components.v1.html(
+        f"""
+<iframe 
+    width="100%" 
+    height="140" 
+    frameborder="0" 
+    style="border:0; border-radius:8px; background-color:#ffffff;" 
+    src="https://maps.google.com/maps?q={query}&t=&z=15&ie=UTF8&iwloc=&output=embed">
+</iframe>
+""",
+        height=145,
     )
 
 
@@ -701,7 +700,7 @@ for lead in enriched_rows:
                 f"🗺️ Navigation</a>",
                 unsafe_allow_html=True,
             )
-            render_static_map(lead["latitude"], lead["longitude"])
+            render_google_map(lead["address"])
 
         st.text_area(
             "✍️ Field Notes (e.g. Email, Mobile):",
