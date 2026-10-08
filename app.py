@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import base64
 import io
-import json
 import math
 import re
 import urllib.parse
-import zlib
 from pathlib import Path
 
 import pandas as pd
@@ -15,7 +12,6 @@ import streamlit as st
 CSV_PATH = Path(__file__).resolve().parent / "samples.csv"
 HELSINKI_CENTRAL = (60.1708, 24.9414)
 WALK_METERS_PER_MIN = 80.0
-SYNC_PARAM = "d"
 
 STATUSES = [
     "🆕 Not Visited Yet",
@@ -95,6 +91,8 @@ KNOWN_COORDS = (
     ("hämeentie 56", 60.1873, 24.9620),
     ("hameentie 54-56", 60.1873, 24.9620),
     ("hameentie 54", 60.1873, 24.9620),
+    ("toinen linja 23", 60.1849, 24.9506),
+    ("toinen linja", 60.1849, 24.9506),
     ("pohjoisesplanadi 2", 60.1678, 24.9436),
     ("aleksanterinkatu 26", 60.1691, 24.9522),
     ("mannerheimintie 20", 60.1692, 24.9388),
@@ -202,13 +200,6 @@ def inject_chrome() -> None:
             overflow: hidden;
             border-radius: 10px;
             border: 1px solid #d9d9d9;
-        }
-        .lead-map-box img {
-            display: block;
-            width: 140px;
-            height: 140px;
-            object-fit: cover;
-            border: 0;
         }
         </style>
         """,
@@ -377,6 +368,42 @@ def render_google_map(address: str) -> None:
     )
 
 
+def qp_get(key: str) -> str:
+    if key not in st.query_params:
+        return ""
+    value = st.query_params[key]
+    if isinstance(value, list):
+        return clean_text(value[0] if value else "")
+    return clean_text(value)
+
+
+def qp_set(key: str, value: str) -> None:
+    text = clean_text(value)
+    if text:
+        st.query_params[key] = text
+    elif key in st.query_params:
+        del st.query_params[key]
+
+
+def lead_sid(prefix: str, idx: int, name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")[:24]
+    return f"{prefix}{idx}_{slug}" if slug else f"{prefix}{idx}"
+
+
+def manual_name_indices() -> list[int]:
+    found: list[int] = []
+    for key in list(st.query_params.keys()):
+        match = re.fullmatch(r"new_name_(\d+)", str(key))
+        if match:
+            found.append(int(match.group(1)))
+    return sorted(set(found))
+
+
+def next_manual_index() -> int:
+    ids = manual_name_indices()
+    return (max(ids) + 1) if ids else 0
+
+
 def forget_old_table_state() -> None:
     try:
         st.cache_data.clear()
@@ -452,60 +479,60 @@ def detect_cols(df: pd.DataFrame) -> dict[str, str]:
     return cols
 
 
-def encode_sync(data: dict) -> str:
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(zlib.compress(payload, 9)).decode("ascii").rstrip("=")
+def empty_lead_row(cols: dict[str, str]) -> dict[str, str]:
+    return {
+        cols["name"]: "",
+        cols["address"]: "",
+        cols["district"]: "",
+        cols["industry"]: "",
+        cols["website"]: "",
+        cols["hours"]: "",
+        cols["status"]: STATUSES[0],
+        cols["notes"]: "",
+        "_sid": "",
+        "_src": "csv",
+        "_extra_i": "",
+    }
 
 
-def decode_sync(token: str) -> dict:
-    text = clean_text(token)
-    if not text:
-        return {}
-    try:
-        padded = text + "=" * (-len(text) % 4)
-        raw = zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii")))
-        data = json.loads(raw.decode("utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+def overlay_status_notes(sid: str, fallback_status: str = "", fallback_notes: str = "") -> tuple[str, str]:
+    status = normalize_status(qp_get(f"stat_{sid}") or fallback_status)
+    notes = qp_get(f"note_{sid}")
+    if not notes:
+        notes = clean_text(fallback_notes)
+    return status, notes
 
 
-def read_sync() -> dict:
-    data = decode_sync(st.query_params.get(SYNC_PARAM, ""))
-    if not data:
-        return {"v": 2, "o": {}, "a": []}
-    if data.get("v") == 2:
-        overrides = data.get("o") if isinstance(data.get("o"), dict) else {}
-        added = data.get("a") if isinstance(data.get("a"), list) else []
-        clean_added = [item for item in added if isinstance(item, dict)]
-        return {"v": 2, "o": overrides, "a": clean_added}
-    overrides = {key: value for key, value in data.items() if isinstance(value, dict)}
-    return {"v": 2, "o": overrides, "a": []}
+def load_manual_leads(cols: dict[str, str]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for extra_i in manual_name_indices():
+        name = qp_get(f"new_name_{extra_i}")
+        address = qp_get(f"new_addr_{extra_i}")
+        if not name or not address:
+            continue
+        sid = lead_sid("m", extra_i, name)
+        status, notes = overlay_status_notes(
+            sid,
+            qp_get(f"new_status_{extra_i}"),
+            qp_get(f"new_notes_{extra_i}"),
+        )
+        row = empty_lead_row(cols)
+        row[cols["name"]] = name
+        row[cols["address"]] = address
+        row[cols["website"]] = qp_get(f"new_link_{extra_i}")
+        row[cols["hours"]] = qp_get(f"new_hours_{extra_i}")
+        row[cols["district"]] = infer_district(address)
+        row[cols["status"]] = status
+        row[cols["notes"]] = notes
+        row["_sid"] = sid
+        row["_src"] = "url"
+        row["_extra_i"] = str(extra_i)
+        rows.append(row)
+    return rows
 
 
-def write_sync(sync: dict) -> None:
-    payload: dict = {"v": 2}
-    overrides = {key: value for key, value in (sync.get("o") or {}).items() if value}
-    added = [item for item in (sync.get("a") or []) if isinstance(item, dict)]
-    if overrides:
-        payload["o"] = overrides
-    if added:
-        payload["a"] = added
-    if "o" not in payload and "a" not in payload:
-        if SYNC_PARAM in st.query_params:
-            del st.query_params[SYNC_PARAM]
-        return
-    st.query_params[SYNC_PARAM] = encode_sync(payload)
-
-
-def lead_sid(prefix: str, idx: int, name: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")[:24]
-    return f"{prefix}{idx}_{slug}" if slug else f"{prefix}{idx}"
-
-
-def merge_url_leads(df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
-    sync = read_sync()
-    work = df.copy()
+def merge_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
+    work = csv_df.copy()
     work["_sid"] = [
         lead_sid("c", int(idx), clean_text(row[cols["name"]])) for idx, row in work.iterrows()
     ]
@@ -518,38 +545,17 @@ def merge_url_leads(df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
     ]
 
     for idx, row in work.iterrows():
-        saved = sync["o"].get(row["_sid"])
-        if not isinstance(saved, dict):
-            continue
-        if "s" in saved:
-            work.loc[idx, cols["status"]] = normalize_status(saved.get("s", ""))
-        if "n" in saved:
-            work.loc[idx, cols["notes"]] = clean_text(saved.get("n", ""))
-
-    extra_rows: list[dict[str, str]] = []
-    for extra_i, item in enumerate(sync["a"]):
-        name = clean_text(item.get("nm"))
-        address = clean_text(item.get("ad"))
-        if not name or not address:
-            continue
-        extra_rows.append(
-            {
-                cols["name"]: name,
-                cols["address"]: address,
-                cols["district"]: infer_district(address, clean_text(item.get("di"))),
-                cols["industry"]: clean_text(item.get("in")),
-                cols["website"]: clean_text(item.get("ws")),
-                cols["hours"]: clean_text(item.get("hr")),
-                cols["status"]: normalize_status(item.get("s", "")),
-                cols["notes"]: clean_text(item.get("n", "")),
-                "_sid": lead_sid("a", extra_i, name),
-                "_src": "url",
-                "_extra_i": str(extra_i),
-            }
+        status, notes = overlay_status_notes(
+            clean_text(row["_sid"]),
+            row[cols["status"]],
+            row[cols["notes"]],
         )
+        work.loc[idx, cols["status"]] = status
+        work.loc[idx, cols["notes"]] = notes
 
-    if extra_rows:
-        extra_df = pd.DataFrame(extra_rows)
+    extras = load_manual_leads(cols)
+    if extras:
+        extra_df = pd.DataFrame(extras)
         work = pd.concat([work, extra_df], ignore_index=True, sort=False).fillna("")
     return work.reset_index(drop=True)
 
@@ -557,47 +563,23 @@ def merge_url_leads(df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
 def persist_lead(df: pd.DataFrame, cols: dict[str, str], row_idx: int, status: str, notes: str) -> None:
     df.loc[row_idx, cols["status"]] = status
     df.loc[row_idx, cols["notes"]] = notes
-    sync = read_sync()
-    overrides: dict = {}
-    added = list(sync["a"])
-
-    for _, row in df.iterrows():
-        sid = clean_text(row["_sid"])
-        row_status = normalize_status(row[cols["status"]])
-        row_notes = clean_text(row[cols["notes"]])
-        src = clean_text(row["_src"])
-        if src == "url":
-            extra_i = parse_float(row["_extra_i"])
-            if extra_i is None:
-                continue
-            idx = int(extra_i)
-            if 0 <= idx < len(added) and isinstance(added[idx], dict):
-                added[idx]["s"] = row_status
-                added[idx]["n"] = row_notes
-            continue
-        entry: dict[str, str] = {}
-        if row_status != STATUSES[0]:
-            entry["s"] = row_status
-        if row_notes:
-            entry["n"] = row_notes
-        if entry:
-            overrides[sid] = entry
-    write_sync({"v": 2, "o": overrides, "a": added})
+    row = df.loc[row_idx]
+    sid = clean_text(row["_sid"])
+    extra_i = clean_text(row["_extra_i"])
+    qp_set(f"stat_{sid}", status if status != STATUSES[0] else "")
+    qp_set(f"note_{sid}", notes)
+    if extra_i != "":
+        qp_set(f"new_status_{extra_i}", status if status != STATUSES[0] else "")
+        qp_set(f"new_notes_{extra_i}", notes)
 
 
-def append_url_lead(name: str, address: str, website: str, hours: str) -> None:
-    sync = read_sync()
-    added = list(sync["a"])
-    added.append(
-        {
-            "nm": name,
-            "ad": address,
-            "ws": website,
-            "hr": hours,
-            "di": infer_district(address),
-        }
-    )
-    write_sync({"v": 2, "o": sync["o"], "a": added})
+def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str) -> None:
+    next_idx = next_manual_index()
+    st.query_params[f"new_name_{next_idx}"] = add_name.strip()
+    st.query_params[f"new_addr_{next_idx}"] = add_addr.strip()
+    st.query_params[f"new_link_{next_idx}"] = add_link.strip()
+    st.query_params[f"new_hours_{next_idx}"] = add_hours.strip()
+    st.rerun()
 
 
 def demo_url(name: str, website: str) -> str:
@@ -612,13 +594,14 @@ forget_old_table_state()
 
 st.title("🎯 Helsinki Website Leads")
 st.markdown(
-    "Leads kommen fest aus der aktuellen `samples.csv`. Status, Notizen und neu angelegte "
-    "Leads liegen im Internet-Link (`st.query_params`) — URL als Lesezeichen speichern."
+    "Leads kommen fest aus der aktuellen `samples.csv`. Manuelle Leads, Status und Notizen "
+    "liegen in der URL (`new_name_0`, `new_addr_0`, …) — Link als Lesezeichen speichern."
 )
 
 csv_df = load_csv_frame()
 cols = detect_cols(csv_df)
-df = merge_url_leads(csv_df, cols)
+df = merge_pipeline(csv_df, cols)
+manual_count = len(manual_name_indices())
 
 st.subheader("Distance")
 filter_left, filter_right = st.columns(2)
@@ -703,8 +686,8 @@ st.markdown("---")
 st.subheader("Active Lead Pipeline")
 st.caption(
     f"{len(enriched_rows)} lead(s) match the current filters "
-    f"({len(csv_df)} from samples.csv + {len(read_sync()['a'])} from URL). "
-    "Bookmark this page after saving notes."
+    f"({len(csv_df)} from samples.csv + {manual_count} from URL). "
+    "Bookmark this page after adding leads or saving notes."
 )
 
 if not enriched_rows:
@@ -789,17 +772,14 @@ for lead in enriched_rows:
 
 st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
-    st.caption("Neue Leads werden nicht in die CSV geschrieben, sondern live in den Link gelegt.")
-    with st.form("add_lead_form", clear_on_submit=True):
-        new_name = st.text_input("Name des Geschäfts / Firma")
-        new_address = st.text_input("Adresse (z.B. Hämeentie 38)")
-        new_link = st.text_input("Website / Demo-Link")
-        new_hours = st.text_input("Visiting Hours")
-        submitted = st.form_submit_button("Lead zur Pipeline hinzufügen")
-
-    if submitted:
-        name = clean_text(new_name)
-        address = clean_text(new_address)
+    st.caption("Neue Leads werden direkt in die URL geschrieben (`new_name_0`, `new_addr_0`, …).")
+    add_name = st.text_input("Name des Geschäfts / Firma", key="add_name")
+    add_addr = st.text_input("Adresse (z.B. Hämeentie 38)", key="add_addr")
+    add_link = st.text_input("Website / Demo-Link", key="add_link")
+    add_hours = st.text_input("Visiting Hours", key="add_hours")
+    if st.button("➕ Lead zur Pipeline hinzufügen", key="add_lead_btn", type="primary"):
+        name = add_name.strip()
+        address = add_addr.strip()
         if not name or not address:
             st.warning("Bitte Name des Geschäfts und Adresse ausfüllen.")
         else:
@@ -810,11 +790,4 @@ with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
             if (name.lower(), normalize_addr(address)) in existing:
                 st.warning("Dieser Lead ist bereits in der Pipeline.")
             else:
-                append_url_lead(
-                    name,
-                    address,
-                    clean_text(new_link),
-                    clean_text(new_hours),
-                )
-                st.success("✅ Lead in den Link übernommen und in der Pipeline sichtbar.")
-                st.rerun()
+                add_manual_lead(name, address, add_link, add_hours)
