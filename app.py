@@ -159,13 +159,17 @@ def website_is_todo(raw: object) -> bool:
     return (not text) or text == WEBSITE_TODO
 
 
-def live_website_url(raw: object) -> str:
-    text = normalize_website(raw)
+def ensure_https(raw: object) -> str:
+    text = clean_text(raw)
     if website_is_todo(text):
         return ""
-    if text.startswith(("http://", "https://")):
+    if text.lower().startswith(("http://", "https://")):
         return text
-    return f"https://{text}"
+    return f"https://{text.lstrip('/')}"
+
+
+def live_website_url(raw: object) -> str:
+    return ensure_https(normalize_website(raw))
 
 
 def normalize_addr(address: str) -> str:
@@ -342,7 +346,7 @@ def leads_from_csv(df: pd.DataFrame) -> list[dict]:
                 "extra_i": "",
                 "name": name,
                 "address": address,
-                "website": normalize_website(website),
+                "website": ensure_https(normalize_website(website)) or WEBSITE_TODO,
                 "hours": normalize_hours(hours),
                 "status": normalize_status(param_value(url_params, f"stat_{sid}")),
                 "notes": param_value(url_params, f"note_{sid}"),
@@ -367,7 +371,7 @@ def leads_from_url(params: dict) -> list[dict]:
                 "extra_i": str(extra_i),
                 "name": name,
                 "address": address,
-                "website": normalize_website(param_value(params, f"new_link_{extra_i}")),
+                "website": ensure_https(normalize_website(param_value(params, f"new_link_{extra_i}"))) or WEBSITE_TODO,
                 "hours": normalize_hours(param_value(params, f"new_hours_{extra_i}")),
                 "status": normalize_status(
                     param_value(params, f"new_status_{extra_i}") or param_value(params, f"stat_{sid}")
