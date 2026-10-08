@@ -159,6 +159,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+if "manual_leads" not in st.session_state:
+    st.session_state["manual_leads"] = []
+
 
 def inject_chrome() -> None:
     st.markdown(
@@ -377,12 +380,30 @@ def qp_get(key: str) -> str:
     return clean_text(value)
 
 
-def qp_set(key: str, value: str) -> None:
-    text = clean_text(value)
-    if text:
-        st.query_params[key] = text
-    elif key in st.query_params:
-        del st.query_params[key]
+def qp_snapshot() -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for key in list(st.query_params.keys()):
+        snapshot[str(key)] = qp_get(str(key))
+    return snapshot
+
+
+def qp_write_many(updates: dict[str, str]) -> None:
+    merged = qp_snapshot()
+    for key, value in updates.items():
+        text = clean_text(value)
+        if text:
+            merged[key] = text
+        else:
+            merged.pop(key, None)
+    try:
+        st.query_params.from_dict(merged)
+    except Exception:
+        for key, value in updates.items():
+            text = clean_text(value)
+            if text:
+                st.query_params[key] = text
+            elif key in st.query_params:
+                del st.query_params[key]
 
 
 def lead_sid(prefix: str, idx: int, name: str) -> str:
@@ -390,7 +411,7 @@ def lead_sid(prefix: str, idx: int, name: str) -> str:
     return f"{prefix}{idx}_{slug}" if slug else f"{prefix}{idx}"
 
 
-def manual_name_indices() -> list[int]:
+def manual_url_indices() -> list[int]:
     found: list[int] = []
     for key in list(st.query_params.keys()):
         match = re.fullmatch(r"new_name_(\d+)", str(key))
@@ -399,9 +420,71 @@ def manual_name_indices() -> list[int]:
     return sorted(set(found))
 
 
+def parse_manual_leads_from_url() -> list[dict]:
+    leads: list[dict] = []
+    for extra_i in manual_url_indices():
+        name = qp_get(f"new_name_{extra_i}")
+        address = qp_get(f"new_addr_{extra_i}")
+        if not name or not address:
+            continue
+        sid = lead_sid("m", extra_i, name)
+        leads.append(
+            {
+                "idx": extra_i,
+                "name": name,
+                "address": address,
+                "website": qp_get(f"new_link_{extra_i}"),
+                "hours": qp_get(f"new_hours_{extra_i}"),
+                "status": normalize_status(qp_get(f"new_status_{extra_i}") or qp_get(f"stat_{sid}")),
+                "notes": qp_get(f"new_notes_{extra_i}") or qp_get(f"note_{sid}"),
+            }
+        )
+    return leads
+
+
 def next_manual_index() -> int:
-    ids = manual_name_indices()
+    ids = list(manual_url_indices())
+    for lead in st.session_state.get("manual_leads", []):
+        try:
+            ids.append(int(lead.get("idx", -1)))
+        except (TypeError, ValueError):
+            continue
+    ids = [i for i in ids if i >= 0]
     return (max(ids) + 1) if ids else 0
+
+
+def hydrate_manual_leads_from_url() -> None:
+    if "manual_leads" not in st.session_state or st.session_state["manual_leads"] is None:
+        st.session_state["manual_leads"] = []
+    by_idx: dict[int, dict] = {}
+    for lead in st.session_state["manual_leads"]:
+        try:
+            by_idx[int(lead.get("idx", -1))] = lead
+        except (TypeError, ValueError):
+            continue
+    for lead in parse_manual_leads_from_url():
+        idx = int(lead["idx"])
+        if idx not in by_idx:
+            st.session_state["manual_leads"].append(lead)
+            continue
+        existing = by_idx[idx]
+        for field in ("name", "address", "website", "hours", "status", "notes"):
+            if not clean_text(existing.get(field)) and clean_text(lead.get(field)):
+                existing[field] = lead[field]
+
+
+def write_manual_lead_to_url(lead: dict) -> None:
+    idx = int(lead["idx"])
+    qp_write_many(
+        {
+            f"new_name_{idx}": lead.get("name", ""),
+            f"new_addr_{idx}": lead.get("address", ""),
+            f"new_link_{idx}": lead.get("website", ""),
+            f"new_hours_{idx}": lead.get("hours", ""),
+            f"new_status_{idx}": lead.get("status", ""),
+            f"new_notes_{idx}": lead.get("notes", ""),
+        }
+    )
 
 
 def forget_old_table_state() -> None:
@@ -479,22 +562,6 @@ def detect_cols(df: pd.DataFrame) -> dict[str, str]:
     return cols
 
 
-def empty_lead_row(cols: dict[str, str]) -> dict[str, str]:
-    return {
-        cols["name"]: "",
-        cols["address"]: "",
-        cols["district"]: "",
-        cols["industry"]: "",
-        cols["website"]: "",
-        cols["hours"]: "",
-        cols["status"]: STATUSES[0],
-        cols["notes"]: "",
-        "_sid": "",
-        "_src": "csv",
-        "_extra_i": "",
-    }
-
-
 def overlay_status_notes(sid: str, fallback_status: str = "", fallback_notes: str = "") -> tuple[str, str]:
     status = normalize_status(qp_get(f"stat_{sid}") or fallback_status)
     notes = qp_get(f"note_{sid}")
@@ -503,31 +570,38 @@ def overlay_status_notes(sid: str, fallback_status: str = "", fallback_notes: st
     return status, notes
 
 
-def load_manual_leads(cols: dict[str, str]) -> list[dict[str, str]]:
+def session_manual_rows(cols: dict[str, str]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for extra_i in manual_name_indices():
-        name = qp_get(f"new_name_{extra_i}")
-        address = qp_get(f"new_addr_{extra_i}")
+    for lead in st.session_state.get("manual_leads", []):
+        name = clean_text(lead.get("name"))
+        address = clean_text(lead.get("address"))
         if not name or not address:
             continue
+        try:
+            extra_i = int(lead.get("idx", 0))
+        except (TypeError, ValueError):
+            extra_i = 0
         sid = lead_sid("m", extra_i, name)
         status, notes = overlay_status_notes(
             sid,
-            qp_get(f"new_status_{extra_i}"),
-            qp_get(f"new_notes_{extra_i}"),
+            lead.get("status", ""),
+            lead.get("notes", ""),
         )
-        row = empty_lead_row(cols)
-        row[cols["name"]] = name
-        row[cols["address"]] = address
-        row[cols["website"]] = qp_get(f"new_link_{extra_i}")
-        row[cols["hours"]] = qp_get(f"new_hours_{extra_i}")
-        row[cols["district"]] = infer_district(address)
-        row[cols["status"]] = status
-        row[cols["notes"]] = notes
-        row["_sid"] = sid
-        row["_src"] = "url"
-        row["_extra_i"] = str(extra_i)
-        rows.append(row)
+        rows.append(
+            {
+                cols["name"]: name,
+                cols["address"]: address,
+                cols["district"]: infer_district(address),
+                cols["industry"]: "",
+                cols["website"]: clean_text(lead.get("website")),
+                cols["hours"]: clean_text(lead.get("hours")),
+                cols["status"]: status,
+                cols["notes"]: notes,
+                "_sid": sid,
+                "_src": "url",
+                "_extra_i": str(extra_i),
+            }
+        )
     return rows
 
 
@@ -553,7 +627,7 @@ def merge_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
         work.loc[idx, cols["status"]] = status
         work.loc[idx, cols["notes"]] = notes
 
-    extras = load_manual_leads(cols)
+    extras = session_manual_rows(cols)
     if extras:
         extra_df = pd.DataFrame(extras)
         work = pd.concat([work, extra_df], ignore_index=True, sort=False).fillna("")
@@ -566,15 +640,38 @@ def persist_lead(df: pd.DataFrame, cols: dict[str, str], row_idx: int, status: s
     row = df.loc[row_idx]
     sid = clean_text(row["_sid"])
     extra_i = clean_text(row["_extra_i"])
-    qp_set(f"stat_{sid}", status if status != STATUSES[0] else "")
-    qp_set(f"note_{sid}", notes)
+    updates = {
+        f"stat_{sid}": status if status != STATUSES[0] else "",
+        f"note_{sid}": notes,
+    }
     if extra_i != "":
-        qp_set(f"new_status_{extra_i}", status if status != STATUSES[0] else "")
-        qp_set(f"new_notes_{extra_i}", notes)
+        updates[f"new_status_{extra_i}"] = status if status != STATUSES[0] else ""
+        updates[f"new_notes_{extra_i}"] = notes
+        for lead in st.session_state.get("manual_leads", []):
+            try:
+                if int(lead.get("idx", -1)) == int(extra_i):
+                    lead["status"] = status
+                    lead["notes"] = notes
+                    break
+            except (TypeError, ValueError):
+                continue
+    qp_write_many(updates)
 
 
 def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str) -> None:
     next_idx = next_manual_index()
+    lead = {
+        "idx": next_idx,
+        "name": add_name.strip(),
+        "address": add_addr.strip(),
+        "website": add_link.strip(),
+        "hours": add_hours.strip(),
+        "status": STATUSES[0],
+        "notes": "",
+    }
+    if "manual_leads" not in st.session_state:
+        st.session_state["manual_leads"] = []
+    st.session_state["manual_leads"].append(lead)
     st.query_params[f"new_name_{next_idx}"] = add_name.strip()
     st.query_params[f"new_addr_{next_idx}"] = add_addr.strip()
     st.query_params[f"new_link_{next_idx}"] = add_link.strip()
@@ -591,17 +688,18 @@ def demo_url(name: str, website: str) -> str:
 
 inject_chrome()
 forget_old_table_state()
+hydrate_manual_leads_from_url()
 
 st.title("🎯 Helsinki Website Leads")
 st.markdown(
-    "Leads kommen fest aus der aktuellen `samples.csv`. Manuelle Leads, Status und Notizen "
-    "liegen in der URL (`new_name_0`, `new_addr_0`, …) — Link als Lesezeichen speichern."
+    "Leads kommen aus `samples.csv`. Manuelle Leads liegen in Session und URL "
+    "(`new_name_0`, `new_addr_0`, …) — Link als Lesezeichen speichern."
 )
 
 csv_df = load_csv_frame()
 cols = detect_cols(csv_df)
 df = merge_pipeline(csv_df, cols)
-manual_count = len(manual_name_indices())
+manual_count = len(st.session_state.get("manual_leads", []))
 
 st.subheader("Distance")
 filter_left, filter_right = st.columns(2)
@@ -686,7 +784,7 @@ st.markdown("---")
 st.subheader("Active Lead Pipeline")
 st.caption(
     f"{len(enriched_rows)} lead(s) match the current filters "
-    f"({len(csv_df)} from samples.csv + {manual_count} from URL). "
+    f"({len(csv_df)} from samples.csv + {manual_count} from URL/session). "
     "Bookmark this page after adding leads or saving notes."
 )
 
@@ -772,7 +870,7 @@ for lead in enriched_rows:
 
 st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
-    st.caption("Neue Leads werden direkt in die URL geschrieben (`new_name_0`, `new_addr_0`, …).")
+    st.caption("Neue Leads werden in Session und URL gespeichert (`new_name_0`, `new_addr_0`, …).")
     add_name = st.text_input("Name des Geschäfts / Firma", key="add_name")
     add_addr = st.text_input("Adresse (z.B. Hämeentie 38)", key="add_addr")
     add_link = st.text_input("Website / Demo-Link", key="add_link")
