@@ -161,10 +161,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-if "manual_leads" not in st.session_state:
-    st.session_state["manual_leads"] = []
-if "lead_edits" not in st.session_state:
-    st.session_state["lead_edits"] = {}
 if "editing_sid" not in st.session_state:
     st.session_state["editing_sid"] = ""
 
@@ -182,16 +178,8 @@ def inject_chrome() -> None:
         div[data-testid="stDecoration"] {display: none;}
         div[data-testid="stStatusWidget"] {display: none;}
         #stDecoration {display: none;}
-
-        .hours-line {
-            text-align: left;
-            margin: 0 0 0.35rem 0;
-        }
-        .addr-line, .district-line {
-            display: block;
-            margin: 0 0 0.2rem 0;
-            line-height: 1.35;
-        }
+        .hours-line { text-align: left; margin: 0 0 0.35rem 0; }
+        .addr-line, .district-line { display: block; margin: 0 0 0.2rem 0; line-height: 1.35; }
         .nav-link {
             display: inline-block;
             font-weight: 800;
@@ -200,15 +188,6 @@ def inject_chrome() -> None:
             font-size: 0.95rem;
             text-align: left;
             margin: 0.1rem 0 0.4rem 0;
-        }
-        .lead-map-box {
-            display: block;
-            width: 140px;
-            height: 140px;
-            max-width: 140px;
-            overflow: hidden;
-            border-radius: 10px;
-            border: 1px solid #d9d9d9;
         }
         </style>
         """,
@@ -286,31 +265,20 @@ def parse_float(value: object) -> float | None:
 
 
 def normalize_addr(address: str) -> str:
-    text = address.lower()
-    text = text.replace("ß", "ss")
+    text = address.lower().replace("ß", "ss")
     text = re.sub(r"[.,]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def fold_fi(text: str) -> str:
-    return (
-        text.lower()
-        .replace("ä", "a")
-        .replace("ö", "o")
-        .replace("å", "a")
-        .replace("é", "e")
-    )
+    return text.lower().replace("ä", "a").replace("ö", "o").replace("å", "a").replace("é", "e")
 
 
 def first_street_number(address: str) -> int | None:
     match = re.search(r"(\d+)", normalize_addr(address))
     if not match:
         return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
+    return int(match.group(1))
 
 
 def street_in_address(haystack: str, streets: tuple[str, ...]) -> bool:
@@ -322,7 +290,6 @@ def coords_for_address(address: str, lat_val: object = None, lon_val: object = N
     lon = parse_float(lon_val)
     if lat is not None and lon is not None:
         return lat, lon
-
     haystack = normalize_addr(address)
     for fragment, c_lat, c_lon in KNOWN_COORDS:
         if fragment in haystack:
@@ -334,22 +301,18 @@ def infer_district(address: str, district: str = "") -> str:
     haystack = fold_fi(normalize_addr(address))
     if not haystack:
         return clean_text(district) or "Central District (Kluuvi/Kamppi)"
-
     if "mannerheimintie" in haystack:
         number = first_street_number(address)
         if number is not None and number > 30:
             return "Töölö"
         return "Central District (Kluuvi/Kamppi)"
-
     if street_in_address(haystack, KALLIO_STREETS):
         return "Kallio"
     if street_in_address(haystack, TOOLO_STREETS):
         return "Töölö"
     if street_in_address(haystack, CENTRAL_STREETS):
         return "Central District (Kluuvi/Kamppi)"
-    if "helsinki" in haystack or clean_text(district):
-        return clean_text(district) or "Central District (Kluuvi/Kamppi)"
-    return "Central District (Kluuvi/Kamppi)"
+    return clean_text(district) or "Central District (Kluuvi/Kamppi)"
 
 
 def normalize_status(raw: str) -> str:
@@ -415,30 +378,22 @@ def qp_get(key: str) -> str:
     return clean_text(value)
 
 
-def qp_snapshot() -> dict[str, str]:
-    snapshot: dict[str, str] = {}
+def qp_dump() -> dict[str, str]:
+    dumped: dict[str, str] = {}
     for key in list(st.query_params.keys()):
-        snapshot[str(key)] = qp_get(str(key))
-    return snapshot
+        dumped[str(key)] = qp_get(str(key))
+    return dumped
 
 
-def qp_write_many(updates: dict[str, str]) -> None:
-    merged = qp_snapshot()
+def qp_commit(updates: dict[str, str]) -> None:
+    merged = qp_dump()
     for key, value in updates.items():
-        text = clean_text(value)
-        if text:
-            merged[key] = text
-        else:
-            merged.pop(key, None)
+        merged[str(key)] = "" if value is None else str(value)
     try:
         st.query_params.from_dict(merged)
     except Exception:
         for key, value in updates.items():
-            text = clean_text(value)
-            if text:
-                st.query_params[key] = text
-            elif key in st.query_params:
-                del st.query_params[key]
+            st.query_params[str(key)] = "" if value is None else str(value)
 
 
 def lead_sid(prefix: str, idx: int, name: str) -> str:
@@ -455,6 +410,11 @@ def manual_url_indices() -> list[int]:
     return sorted(set(found))
 
 
+def next_manual_index() -> int:
+    ids = manual_url_indices()
+    return (max(ids) + 1) if ids else 0
+
+
 def parse_manual_leads_from_url() -> list[dict]:
     leads: list[dict] = []
     for extra_i in manual_url_indices():
@@ -462,117 +422,32 @@ def parse_manual_leads_from_url() -> list[dict]:
         address = qp_get(f"new_addr_{extra_i}")
         if not name or not address:
             continue
-        sid = lead_sid("m", extra_i, name)
+        sid = f"m{extra_i}"
         leads.append(
             {
                 "idx": extra_i,
+                "sid": sid,
                 "name": name,
                 "address": address,
                 "website": normalize_website(qp_get(f"new_link_{extra_i}")),
                 "hours": normalize_hours(qp_get(f"new_hours_{extra_i}")),
                 "status": normalize_status(qp_get(f"new_status_{extra_i}") or qp_get(f"stat_{sid}")),
                 "notes": qp_get(f"new_notes_{extra_i}") or qp_get(f"note_{sid}"),
+                "src": "url",
             }
         )
     return leads
-
-
-def next_manual_index() -> int:
-    ids = list(manual_url_indices())
-    for lead in st.session_state.get("manual_leads", []):
-        try:
-            ids.append(int(lead.get("idx", -1)))
-        except (TypeError, ValueError):
-            continue
-    ids = [i for i in ids if i >= 0]
-    return (max(ids) + 1) if ids else 0
-
-
-def hydrate_lead_edits_from_url() -> None:
-    if "lead_edits" not in st.session_state or not isinstance(st.session_state["lead_edits"], dict):
-        st.session_state["lead_edits"] = {}
-    for key in list(st.query_params.keys()):
-        match = re.fullmatch(r"en_(.+)", str(key))
-        if not match:
-            continue
-        sid = match.group(1)
-        patch = dict(st.session_state["lead_edits"].get(sid) or {})
-        name = qp_get(f"en_{sid}")
-        address = qp_get(f"ea_{sid}")
-        website = qp_get(f"ew_{sid}")
-        if name:
-            patch["name"] = name
-        if address:
-            patch["address"] = address
-        if website:
-            patch["website"] = normalize_website(website)
-        if patch:
-            st.session_state["lead_edits"][sid] = patch
-
-
-def hydrate_manual_leads_from_url() -> None:
-    if "manual_leads" not in st.session_state or st.session_state["manual_leads"] is None:
-        st.session_state["manual_leads"] = []
-    by_idx: dict[int, dict] = {}
-    for lead in st.session_state["manual_leads"]:
-        try:
-            by_idx[int(lead.get("idx", -1))] = lead
-        except (TypeError, ValueError):
-            continue
-    for lead in parse_manual_leads_from_url():
-        idx = int(lead["idx"])
-        if idx not in by_idx:
-            st.session_state["manual_leads"].append(lead)
-            continue
-        existing = by_idx[idx]
-        for field in ("name", "address", "website", "hours", "status", "notes"):
-            if not clean_text(existing.get(field)) and clean_text(lead.get(field)):
-                existing[field] = lead[field]
-
-
-def write_manual_lead_to_url(lead: dict) -> None:
-    idx = int(lead["idx"])
-    qp_write_many(
-        {
-            f"new_name_{idx}": lead.get("name", ""),
-            f"new_addr_{idx}": lead.get("address", ""),
-            f"new_link_{idx}": lead.get("website", ""),
-            f"new_hours_{idx}": lead.get("hours", ""),
-            f"new_status_{idx}": lead.get("status", ""),
-            f"new_notes_{idx}": lead.get("notes", ""),
-        }
-    )
-
-
-def forget_old_table_state() -> None:
-    try:
-        st.cache_data.clear()
-        st.cache_resource.clear()
-    except Exception:
-        pass
-
-    if not CSV_PATH.exists():
-        return
-    stamp = f"{CSV_PATH.stat().st_mtime_ns}:{CSV_PATH.stat().st_size}"
-    if st.session_state.get("_csv_stamp") == stamp:
-        return
-    for key in list(st.session_state.keys()):
-        if key.startswith(("status_", "notes_", "save_")):
-            del st.session_state[key]
-    st.session_state["_csv_stamp"] = stamp
 
 
 def load_csv_frame() -> pd.DataFrame:
     if not CSV_PATH.exists():
         st.error(f"Could not find `{CSV_PATH.name}` next to the app.")
         st.stop()
-
     raw = CSV_PATH.read_bytes()
     try:
         df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig").fillna("")
     except pd.errors.ParserError:
         df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", sep=";").fillna("")
-
     df.columns = [str(c).strip() for c in df.columns]
     for col in df.columns:
         df[col] = df[col].map(clean_text)
@@ -593,10 +468,10 @@ def detect_cols(df: pd.DataFrame) -> dict[str, str]:
         "lon": pick_col(df, LON_CANDIDATES),
     }
     if cols["name"] is None:
-        st.error("Could not detect a company-name column (Company-Name / Name / Firma).")
+        st.error("Could not detect a company-name column.")
         st.stop()
     if cols["address"] is None:
-        st.error("Could not detect a street-address column (Street-Address / Address).")
+        st.error("Could not detect a street-address column.")
         st.stop()
     if cols["status"] is None:
         df["Status"] = STATUSES[0]
@@ -619,222 +494,141 @@ def detect_cols(df: pd.DataFrame) -> dict[str, str]:
     return cols
 
 
-def overlay_status_notes(sid: str, fallback_status: str = "", fallback_notes: str = "") -> tuple[str, str]:
-    status = normalize_status(qp_get(f"stat_{sid}") or fallback_status)
-    notes = qp_get(f"note_{sid}")
-    if not notes:
-        notes = clean_text(fallback_notes)
-    return status, notes
+def csv_edit_patch(sid: str) -> dict[str, str]:
+    name = qp_get(f"en_{sid}")
+    address = qp_get(f"ea_{sid}")
+    website = qp_get(f"ew_{sid}")
+    patch: dict[str, str] = {}
+    if name:
+        patch["name"] = name
+    if address:
+        patch["address"] = address
+    if website:
+        patch["website"] = normalize_website(website)
+    return patch
 
 
-def session_manual_rows(cols: dict[str, str]) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for lead in st.session_state.get("manual_leads", []):
-        name = clean_text(lead.get("name"))
-        address = clean_text(lead.get("address"))
-        if not name or not address:
-            continue
-        try:
-            extra_i = int(lead.get("idx", 0))
-        except (TypeError, ValueError):
-            extra_i = 0
-        sid = lead_sid("m", extra_i, name)
-        status, notes = overlay_status_notes(
-            sid,
-            lead.get("status", ""),
-            lead.get("notes", ""),
-        )
-        rows.append(
+def build_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> list[dict]:
+    leads: list[dict] = []
+    for idx, row in csv_df.iterrows():
+        sid = f"c{int(idx)}"
+        patch = csv_edit_patch(sid)
+        name = patch.get("name") or clean_text(row[cols["name"]])
+        address = patch.get("address") or clean_text(row[cols["address"]])
+        website = patch.get("website") or normalize_website(row[cols["website"]])
+        leads.append(
             {
-                cols["name"]: name,
-                cols["address"]: address,
-                cols["district"]: infer_district(address),
-                cols["industry"]: "",
-                cols["website"]: normalize_website(lead.get("website")),
-                cols["hours"]: normalize_hours(lead.get("hours")),
-                cols["status"]: status,
-                cols["notes"]: notes,
-                "_sid": sid,
-                "_src": "url",
-                "_extra_i": str(extra_i),
+                "sid": sid,
+                "csv_idx": int(idx),
+                "extra_i": "",
+                "name": name,
+                "address": address,
+                "website": website,
+                "hours": normalize_hours(row[cols["hours"]]),
+                "status": normalize_status(qp_get(f"stat_{sid}") or row[cols["status"]]),
+                "notes": qp_get(f"note_{sid}") or clean_text(row[cols["notes"]]),
+                "district": infer_district(address, clean_text(row[cols["district"]])),
+                "industry": clean_text(row[cols["industry"]]) if cols["industry"] else "",
+                "src": "csv",
+                "lat_src": row[cols["lat"]] if cols["lat"] else "",
+                "lon_src": row[cols["lon"]] if cols["lon"] else "",
             }
         )
-        patch = (st.session_state.get("lead_edits") or {}).get(sid) or {}
-        if patch:
-            if clean_text(patch.get("name")):
-                rows[-1][cols["name"]] = clean_text(patch.get("name"))
-            if clean_text(patch.get("address")):
-                rows[-1][cols["address"]] = clean_text(patch.get("address"))
-                rows[-1][cols["district"]] = infer_district(rows[-1][cols["address"]])
-            if clean_text(patch.get("website")):
-                rows[-1][cols["website"]] = normalize_website(patch.get("website"))
-    return rows
 
-
-def merge_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
-    work = csv_df.copy()
-    work["_sid"] = [
-        lead_sid("c", int(idx), clean_text(row[cols["name"]])) for idx, row in work.iterrows()
-    ]
-    work["_src"] = "csv"
-    work["_extra_i"] = ""
-    work[cols["status"]] = work[cols["status"]].map(normalize_status)
-    work[cols["district"]] = [
-        infer_district(clean_text(row[cols["address"]]), clean_text(row[cols["district"]]))
-        for _, row in work.iterrows()
-    ]
-
-    for idx, row in work.iterrows():
-        status, notes = overlay_status_notes(
-            clean_text(row["_sid"]),
-            row[cols["status"]],
-            row[cols["notes"]],
+    for item in parse_manual_leads_from_url():
+        address = item["address"]
+        leads.append(
+            {
+                "sid": item["sid"],
+                "csv_idx": -1,
+                "extra_i": str(item["idx"]),
+                "name": item["name"],
+                "address": address,
+                "website": item["website"],
+                "hours": item["hours"],
+                "status": item["status"],
+                "notes": item["notes"],
+                "district": infer_district(address),
+                "industry": "",
+                "src": "url",
+                "lat_src": "",
+                "lon_src": "",
+            }
         )
-        work.loc[idx, cols["status"]] = status
-        work.loc[idx, cols["notes"]] = notes
-        patch = (st.session_state.get("lead_edits") or {}).get(clean_text(row["_sid"])) or {}
-        if patch.get("name"):
-            work.loc[idx, cols["name"]] = clean_text(patch.get("name"))
-        if patch.get("address"):
-            work.loc[idx, cols["address"]] = clean_text(patch.get("address"))
-            work.loc[idx, cols["district"]] = infer_district(clean_text(patch.get("address")))
-        if patch.get("website"):
-            work.loc[idx, cols["website"]] = normalize_website(patch.get("website"))
-
-    extras = session_manual_rows(cols)
-    if extras:
-        extra_df = pd.DataFrame(extras)
-        work = pd.concat([work, extra_df], ignore_index=True, sort=False).fillna("")
-    return work.reset_index(drop=True)
-
-
-def persist_lead(df: pd.DataFrame, cols: dict[str, str], row_idx: int, status: str, notes: str) -> None:
-    df.loc[row_idx, cols["status"]] = status
-    df.loc[row_idx, cols["notes"]] = notes
-    row = df.loc[row_idx]
-    sid = clean_text(row["_sid"])
-    extra_i = clean_text(row["_extra_i"])
-    updates = {
-        f"stat_{sid}": status if status != STATUSES[0] else "",
-        f"note_{sid}": notes,
-    }
-    if extra_i != "":
-        updates[f"new_status_{extra_i}"] = status if status != STATUSES[0] else ""
-        updates[f"new_notes_{extra_i}"] = notes
-        for lead in st.session_state.get("manual_leads", []):
-            try:
-                if int(lead.get("idx", -1)) == int(extra_i):
-                    lead["status"] = status
-                    lead["notes"] = notes
-                    break
-            except (TypeError, ValueError):
-                continue
-    qp_write_many(updates)
+    return leads
 
 
 def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str) -> None:
     next_idx = next_manual_index()
-    website = normalize_website(add_link)
-    hours = normalize_hours(add_hours)
-    lead = {
-        "idx": next_idx,
-        "name": add_name.strip(),
-        "address": add_addr.strip(),
-        "website": website,
-        "hours": hours,
-        "status": STATUSES[0],
-        "notes": "",
-    }
-    if "manual_leads" not in st.session_state:
-        st.session_state["manual_leads"] = []
-    st.session_state["manual_leads"].append(lead)
     st.query_params[f"new_name_{next_idx}"] = add_name.strip()
     st.query_params[f"new_addr_{next_idx}"] = add_addr.strip()
-    st.query_params[f"new_link_{next_idx}"] = website
-    st.query_params[f"new_hours_{next_idx}"] = hours
+    st.query_params[f"new_link_{next_idx}"] = normalize_website(add_link)
+    st.query_params[f"new_hours_{next_idx}"] = normalize_hours(add_hours)
     st.rerun()
 
 
-def save_lead_info(sid: str, extra_i: str, name: str, address: str, website: str) -> None:
+def save_lead_edits(sid: str, extra_i: str, name: str, address: str, website: str) -> None:
     name = name.strip()
     address = address.strip()
     website = normalize_website(website)
     if not name or not address:
         st.warning("Bitte Name und Adresse ausfüllen.")
         return
-
-    patch = {"name": name, "address": address, "website": website}
-    if "lead_edits" not in st.session_state:
-        st.session_state["lead_edits"] = {}
-    st.session_state["lead_edits"][sid] = patch
-
     if extra_i != "":
-        for lead in st.session_state.get("manual_leads", []):
-            try:
-                if int(lead.get("idx", -1)) == int(extra_i):
-                    lead["name"] = name
-                    lead["address"] = address
-                    lead["website"] = website
-                    write_manual_lead_to_url(lead)
-                    break
-            except (TypeError, ValueError):
-                continue
-
-    qp_write_many(
-        {
-            f"en_{sid}": name,
-            f"ea_{sid}": address,
-            f"ew_{sid}": website,
-        }
-    )
+        st.query_params[f"new_name_{extra_i}"] = name
+        st.query_params[f"new_addr_{extra_i}"] = address
+        st.query_params[f"new_link_{extra_i}"] = website
+    else:
+        st.query_params[f"en_{sid}"] = name
+        st.query_params[f"ea_{sid}"] = address
+        st.query_params[f"ew_{sid}"] = website
     st.session_state["editing_sid"] = ""
     for key in (f"edit_name_{sid}", f"edit_addr_{sid}", f"edit_link_{sid}"):
         st.session_state.pop(key, None)
     st.rerun()
 
 
-def cancel_lead_edit(sid: str) -> None:
-    st.session_state["editing_sid"] = ""
-    for key in (f"edit_name_{sid}", f"edit_addr_{sid}", f"edit_link_{sid}"):
-        st.session_state.pop(key, None)
+def persist_status_notes(sid: str, extra_i: str, status: str, notes: str) -> None:
+    st.query_params[f"stat_{sid}"] = status
+    st.query_params[f"note_{sid}"] = notes
+    if extra_i != "":
+        st.query_params[f"new_status_{extra_i}"] = status
+        st.query_params[f"new_notes_{extra_i}"] = notes
     st.rerun()
 
 
 inject_chrome()
-forget_old_table_state()
-hydrate_manual_leads_from_url()
-hydrate_lead_edits_from_url()
 
 st.title("🎯 Helsinki Website Leads")
 st.markdown(
-    "Leads kommen aus `samples.csv`. Manuelle Leads liegen in Session und URL "
-    "(`new_name_0`, `new_addr_0`, …) — Link als Lesezeichen speichern."
+    "Basis-Leads aus `samples.csv`. Manuelle Leads und Korrekturen stehen in der URL "
+    "(`new_name_0`, `new_addr_0`, …). Diesen Link als Lesezeichen speichern und teilen."
 )
 
 csv_df = load_csv_frame()
 cols = detect_cols(csv_df)
-df = merge_pipeline(csv_df, cols)
-manual_count = len(st.session_state.get("manual_leads", []))
+all_leads = build_pipeline(csv_df, cols)
+manual_count = len(parse_manual_leads_from_url())
 
 st.subheader("Distance")
 filter_left, filter_right = st.columns(2)
 
 with filter_left:
-    disable_distance = st.session_state.get("disable_distance", False)
+    home_mode = st.session_state.get("home_mode", False)
     st.slider(
         "Max walking distance from YOUR location (meters)",
         min_value=100,
         max_value=5000,
         value=2000,
         step=50,
-        disabled=disable_distance,
+        disabled=home_mode,
         key="max_distance",
     )
     st.checkbox(
-        "🚫 Disable distance filter (Show all prepared leads)",
-        key="disable_distance",
+        "🏠 Home Mode (Show all prepared leads)",
+        key="home_mode",
     )
-    disable_distance = st.session_state["disable_distance"]
+    home_mode = st.session_state["home_mode"]
 
 with filter_right:
     industry_keyword = st.text_input(
@@ -851,64 +645,39 @@ origin_lat, origin_lon = HELSINKI_CENTRAL
 keyword = industry_keyword.strip().lower()
 
 enriched_rows: list[dict] = []
-for idx, row in df.iterrows():
-    address = clean_text(row[cols["address"]])
-    lat_src = row[cols["lat"]] if cols["lat"] else ""
-    lon_src = row[cols["lon"]] if cols["lon"] else ""
-    lat, lon = coords_for_address(address, lat_src, lon_src)
+for lead in all_leads:
+    lat, lon = coords_for_address(lead["address"], lead["lat_src"], lead["lon_src"])
     distance_m = haversine_m(origin_lat, origin_lon, lat, lon)
-
-    name = clean_text(row[cols["name"]])
-    district = infer_district(address, clean_text(row[cols["district"]]))
-    industry = clean_text(row[cols["industry"]])
-    website = normalize_website(row[cols["website"]])
-    hours = normalize_hours(row[cols["hours"]])
-    status = normalize_status(row[cols["status"]])
-    notes = clean_text(row[cols["notes"]])
-
-    if not district_matches(district, district_filter):
+    if not district_matches(lead["district"], district_filter):
         continue
     if keyword:
-        blob = f"{industry} {name} {address} {district}".lower()
+        blob = f"{lead['industry']} {lead['name']} {lead['address']} {lead['district']}".lower()
         if keyword not in blob:
             continue
-    if not disable_distance and distance_m > float(st.session_state["max_distance"]):
+    if not home_mode and distance_m > float(st.session_state["max_distance"]):
         continue
+    item = dict(lead)
+    item["latitude"] = lat
+    item["longitude"] = lon
+    item["distance_m"] = distance_m
+    enriched_rows.append(item)
 
-    enriched_rows.append(
-        {
-            "idx": int(idx),
-            "sid": clean_text(row["_sid"]),
-            "name": name,
-            "address": address,
-            "district": district or "—",
-            "industry": industry,
-            "website": website,
-            "hours": hours,
-            "status": status,
-            "notes": notes,
-            "latitude": lat,
-            "longitude": lon,
-            "distance_m": distance_m,
-            "extra_i": clean_text(row["_extra_i"]),
-        }
-    )
-
-enriched_rows.sort(key=lambda item: (0 if item["status"] == STATUSES[0] else 1, item["distance_m"], item["name"]))
+enriched_rows.sort(
+    key=lambda item: (0 if item["status"] == STATUSES[0] else 1, item["distance_m"], item["name"])
+)
 
 st.markdown("---")
 st.subheader("Active Lead Pipeline")
 st.caption(
     f"{len(enriched_rows)} lead(s) match the current filters "
-    f"({len(csv_df)} from samples.csv + {manual_count} from URL/session). "
-    "Bookmark this page after adding leads or saving notes."
+    f"({len(csv_df)} from samples.csv + {manual_count} from URL). "
+    "Bookmark the full browser link after adding or editing leads."
 )
 
 if not enriched_rows:
-    st.info("No leads match these filters. Relax the distance, industry, or district filter.")
+    st.info("No leads match these filters. Turn on Home Mode or relax the filters.")
 
 for lead in enriched_rows:
-    row_idx = int(lead["idx"])
     uid = lead["sid"]
     status_key = f"status_{uid}"
     notes_key = f"notes_{uid}"
@@ -930,15 +699,16 @@ for lead in enriched_rows:
                 if f"edit_addr_{uid}" not in st.session_state:
                     st.session_state[f"edit_addr_{uid}"] = lead["address"]
                 if f"edit_link_{uid}" not in st.session_state:
-                    display_link = "" if lead["website"] == WEBSITE_TODO else lead["website"]
-                    st.session_state[f"edit_link_{uid}"] = display_link
+                    st.session_state[f"edit_link_{uid}"] = (
+                        "" if website_is_todo(lead["website"]) else lead["website"]
+                    )
                 st.text_input("Edit Name", key=f"edit_name_{uid}")
                 st.text_input("Edit Address", key=f"edit_addr_{uid}")
                 st.text_input("Edit Website Link", key=f"edit_link_{uid}")
                 save_col, cancel_col = st.columns(2)
                 with save_col:
                     if st.button("💾 Save Changes", key=f"save_info_{uid}", type="primary", use_container_width=True):
-                        save_lead_info(
+                        save_lead_edits(
                             uid,
                             lead["extra_i"],
                             st.session_state[f"edit_name_{uid}"],
@@ -947,7 +717,10 @@ for lead in enriched_rows:
                         )
                 with cancel_col:
                     if st.button("❌ Cancel", key=f"cancel_info_{uid}", use_container_width=True):
-                        cancel_lead_edit(uid)
+                        st.session_state["editing_sid"] = ""
+                        for key in (f"edit_name_{uid}", f"edit_addr_{uid}", f"edit_link_{uid}"):
+                            st.session_state.pop(key, None)
+                        st.rerun()
             else:
                 st.markdown(f"### {lead['name']}")
                 st.markdown(
@@ -959,7 +732,7 @@ for lead in enriched_rows:
                     st.session_state[f"edit_name_{uid}"] = lead["name"]
                     st.session_state[f"edit_addr_{uid}"] = lead["address"]
                     st.session_state[f"edit_link_{uid}"] = (
-                        "" if lead["website"] == WEBSITE_TODO else lead["website"]
+                        "" if website_is_todo(lead["website"]) else lead["website"]
                     )
                     st.rerun()
 
@@ -967,7 +740,7 @@ for lead in enriched_rows:
                 f"<div class='district-line'>🏙️ District: {lead['district']}</div>",
                 unsafe_allow_html=True,
             )
-            if disable_distance:
+            if home_mode:
                 st.markdown("🚶‍♂️ Distance to you: N/A")
             else:
                 meters = int(round(lead["distance_m"]))
@@ -981,8 +754,7 @@ for lead in enriched_rows:
                 label_visibility="collapsed",
             )
             if chosen_status != lead["status"]:
-                persist_lead(df, cols, row_idx, chosen_status, st.session_state[notes_key])
-                st.rerun()
+                persist_status_notes(uid, lead["extra_i"], chosen_status, st.session_state[notes_key])
 
             demo_href = live_website_url(lead["website"])
             if website_is_todo(lead["website"]) or not demo_href:
@@ -1013,26 +785,15 @@ for lead in enriched_rows:
             )
             render_google_map(lead["address"])
 
-        st.text_area(
-            "✍️ Field Notes (e.g. Email, Mobile):",
-            key=notes_key,
-        )
+        st.text_area("✍️ Field Notes (e.g. Email, Mobile):", key=notes_key)
         if st.button("💾 Save Note", key=save_key, use_container_width=True, type="secondary"):
-            persist_lead(
-                df,
-                cols,
-                row_idx,
-                st.session_state[status_key],
-                st.session_state[notes_key],
-            )
-            st.success("✅ Note synchronized into the URL. Bookmark this link.")
-            st.rerun()
+            persist_status_notes(uid, lead["extra_i"], st.session_state[status_key], st.session_state[notes_key])
 
 st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
     st.caption(
-        "Nur Name und Adresse sind Pflicht. Website und Visiting Hours sind freiwillig "
-        "(beliebiges Textformat, z. B. 12.00-24.00 oder Abends)."
+        "Nur Name und Adresse sind Pflicht. Der Lead wird sofort in die Browser-URL geschrieben. "
+        "Danach den gesamten Link als Lesezeichen speichern."
     )
     add_name = st.text_input("Name des Geschäfts / Firma", key="add_name")
     add_addr = st.text_input("Adresse (z.B. Hämeentie 38)", key="add_addr")
@@ -1044,10 +805,7 @@ with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
         if not name or not address:
             st.warning("Bitte Name des Geschäfts und Adresse ausfüllen.")
         else:
-            existing = {
-                (clean_text(row[cols["name"]]).lower(), normalize_addr(row[cols["address"]]))
-                for _, row in df.iterrows()
-            }
+            existing = {(item["name"].lower(), normalize_addr(item["address"])) for item in all_leads}
             if (name.lower(), normalize_addr(address)) in existing:
                 st.warning("Dieser Lead ist bereits in der Pipeline.")
             else:
