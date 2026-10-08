@@ -247,7 +247,23 @@ def normalize_website(raw: object) -> str:
     low = text.lower().rstrip("/")
     if not text or low in {"https:", "http:", "https://", "http://", "https", "http"}:
         return WEBSITE_TODO
+    if "google.com/search" in low:
+        return WEBSITE_TODO
     return text
+
+
+def website_is_todo(raw: object) -> bool:
+    text = normalize_website(raw)
+    return (not text) or text == WEBSITE_TODO
+
+
+def live_website_url(raw: object) -> str:
+    text = normalize_website(raw)
+    if website_is_todo(text):
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    return f"https://{text}"
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -784,13 +800,6 @@ def cancel_lead_edit(sid: str) -> None:
     st.rerun()
 
 
-def demo_url(name: str, website: str) -> str:
-    if website.startswith(("http://", "https://")):
-        return website
-    query = re.sub(r"\s+", "+", name.strip()) or "Helsinki"
-    return f"https://www.google.com/search?q={query}+Helsinki"
-
-
 inject_chrome()
 forget_old_table_state()
 hydrate_manual_leads_from_url()
@@ -975,7 +984,8 @@ for lead in enriched_rows:
                 persist_lead(df, cols, row_idx, chosen_status, st.session_state[notes_key])
                 st.rerun()
 
-            if lead["website"] == WEBSITE_TODO:
+            demo_href = live_website_url(lead["website"])
+            if website_is_todo(lead["website"]) or not demo_href:
                 st.button(
                     "⚠️ Website to be done",
                     key=f"todo_web_{uid}",
@@ -985,7 +995,7 @@ for lead in enriched_rows:
             else:
                 st.link_button(
                     f"🌐 Click here to open Demo Website for {lead['name']}",
-                    url=demo_url(lead["name"], lead["website"]),
+                    url=demo_href,
                     type="primary",
                     use_container_width=True,
                 )
