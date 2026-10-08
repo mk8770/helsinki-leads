@@ -104,55 +104,8 @@ KNOWN_COORDS = (
     ("tehtaankatu 27", 60.1589, 24.9448),
 )
 
-NAME_CANDIDATES = (
-    "company-name",
-    "company_name",
-    "name",
-    "firma",
-    "company",
-    "business",
-    "yritys",
-    "nimi",
-)
-ADDRESS_CANDIDATES = (
-    "street-address",
-    "street_address",
-    "address",
-    "adresse",
-    "street",
-    "strasse",
-    "straße",
-    "katu",
-    "osoite",
-)
-DISTRICT_CANDIDATES = ("district", "stadtteil", "area", "neighborhood", "kaupunginosa", "alue")
-INDUSTRY_CANDIDATES = ("industry", "branche", "category", "keyword", "toimiala", "tyyppi")
-WEBSITE_CANDIDATES = (
-    "sample-link",
-    "sample_link",
-    "website",
-    "url",
-    "demo",
-    "link",
-    "site",
-    "web",
-)
-HOURS_CANDIDATES = (
-    "visiting-hours",
-    "visiting_hours",
-    "visiting hours",
-    "hours",
-    "uhrzeit",
-    "aukiolo",
-    "opening",
-)
-STATUS_CANDIDATES = ("status", "visit status", "besuchsstatus")
-NOTES_CANDIDATES = ("notes", "notizen", "note", "field notes", "kommentar")
-LAT_CANDIDATES = ("latitude", "lat", "y")
-LON_CANDIDATES = ("longitude", "lon", "lng", "long", "x")
 WEBSITE_TODO = "Website to be done"
 HOURS_FALLBACK = "Not specified"
-
 
 st.set_page_config(
     page_title="Helsinki Website Leads",
@@ -161,50 +114,20 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+url_params = st.query_params.to_dict()
+
 if "editing_sid" not in st.session_state:
     st.session_state["editing_sid"] = ""
 
 
-def inject_chrome() -> None:
-    st.markdown(
-        """
-        <style>
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        header {visibility: hidden;}
-        .stDeployButton {display: none;}
-        .stAppDeployButton {display: none;}
-        div[data-testid="stToolbar"] {display: none;}
-        div[data-testid="stDecoration"] {display: none;}
-        div[data-testid="stStatusWidget"] {display: none;}
-        #stDecoration {display: none;}
-        .hours-line { text-align: left; margin: 0 0 0.35rem 0; }
-        .addr-line, .district-line { display: block; margin: 0 0 0.2rem 0; line-height: 1.35; }
-        .nav-link {
-            display: inline-block;
-            font-weight: 800;
-            color: #4285F4 !important;
-            text-decoration: none;
-            font-size: 0.95rem;
-            text-align: left;
-            margin: 0.1rem 0 0.4rem 0;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def pick_col(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
-    normalized = {str(col).strip().lower(): col for col in df.columns}
-    for cand in candidates:
-        if cand in normalized:
-            return normalized[cand]
-    for key, original in normalized.items():
-        for cand in candidates:
-            if cand in key or key in cand:
-                return original
-    return None
+def param_value(params: dict, key: str) -> str:
+    value = params.get(key, "")
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    text = str(value).strip() if value is not None else ""
+    if text.lower() in {"nan", "none", "null"}:
+        return ""
+    return text
 
 
 def clean_text(value: object) -> str:
@@ -245,25 +168,6 @@ def live_website_url(raw: object) -> str:
     return f"https://{text}"
 
 
-def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6_371_000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lon2 - lon1)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    return 2 * radius * math.asin(math.sqrt(min(1.0, a)))
-
-
-def parse_float(value: object) -> float | None:
-    text = clean_text(value).replace(",", ".")
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
-
-
 def normalize_addr(address: str) -> str:
     text = address.lower().replace("ß", "ss")
     text = re.sub(r"[.,]", " ", text)
@@ -281,56 +185,22 @@ def first_street_number(address: str) -> int | None:
     return int(match.group(1))
 
 
-def street_in_address(haystack: str, streets: tuple[str, ...]) -> bool:
-    return any(street in haystack for street in streets)
-
-
-def coords_for_address(address: str, lat_val: object = None, lon_val: object = None) -> tuple[float, float]:
-    lat = parse_float(lat_val)
-    lon = parse_float(lon_val)
-    if lat is not None and lon is not None:
-        return lat, lon
-    haystack = normalize_addr(address)
-    for fragment, c_lat, c_lon in KNOWN_COORDS:
-        if fragment in haystack:
-            return c_lat, c_lon
-    return HELSINKI_CENTRAL
-
-
-def infer_district(address: str, district: str = "") -> str:
+def infer_district(address: str) -> str:
     haystack = fold_fi(normalize_addr(address))
     if not haystack:
-        return clean_text(district) or "Central District (Kluuvi/Kamppi)"
+        return "Central District (Kluuvi/Kamppi)"
     if "mannerheimintie" in haystack:
         number = first_street_number(address)
         if number is not None and number > 30:
             return "Töölö"
         return "Central District (Kluuvi/Kamppi)"
-    if street_in_address(haystack, KALLIO_STREETS):
+    if any(street in haystack for street in KALLIO_STREETS):
         return "Kallio"
-    if street_in_address(haystack, TOOLO_STREETS):
+    if any(street in haystack for street in TOOLO_STREETS):
         return "Töölö"
-    if street_in_address(haystack, CENTRAL_STREETS):
+    if any(street in haystack for street in CENTRAL_STREETS):
         return "Central District (Kluuvi/Kamppi)"
-    return clean_text(district) or "Central District (Kluuvi/Kamppi)"
-
-
-def normalize_status(raw: str) -> str:
-    text = clean_text(raw)
-    if text in STATUSES:
-        return text
-    low = text.lower()
-    rules = (
-        ("not interested", STATUSES[2]),
-        ("interested", STATUSES[1]),
-        ("follow-up", STATUSES[3]),
-        ("follow up", STATUSES[3]),
-        ("not visited", STATUSES[0]),
-    )
-    for needle, status in rules:
-        if needle in low:
-            return status
-    return STATUSES[0]
+    return "Central District (Kluuvi/Kamppi)"
 
 
 def district_matches(row_district: str, selected: str) -> bool:
@@ -341,6 +211,47 @@ def district_matches(row_district: str, selected: str) -> bool:
     low = normalize_addr(row_district)
     aliases = DISTRICT_ALIASES.get(selected, ())
     return any(alias in low for alias in aliases)
+
+
+def normalize_status(raw: str) -> str:
+    text = clean_text(raw)
+    if text in STATUSES:
+        return text
+    low = text.lower()
+    if "not interested" in low:
+        return STATUSES[2]
+    if "interested" in low:
+        return STATUSES[1]
+    if "follow-up" in low or "follow up" in low:
+        return STATUSES[3]
+    return STATUSES[0]
+
+
+def parse_float(value: object) -> float | None:
+    text = clean_text(value).replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def coords_for_address(address: str) -> tuple[float, float]:
+    haystack = normalize_addr(address)
+    for fragment, c_lat, c_lon in KNOWN_COORDS:
+        if fragment in haystack:
+            return c_lat, c_lon
+    return HELSINKI_CENTRAL
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6_371_000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(min(1.0, a)))
 
 
 def walking_minutes(meters: float) -> int:
@@ -357,11 +268,11 @@ def render_google_map(address: str) -> None:
     query = urllib.parse.quote(f"{address}, Helsinki, Finland")
     st.components.v1.html(
         f"""
-<iframe 
-    width="100%" 
-    height="140" 
-    frameborder="0" 
-    style="border:0; border-radius:8px; background-color:#ffffff;" 
+<iframe
+    width="100%"
+    height="140"
+    frameborder="0"
+    style="border:0; border-radius:8px; background-color:#ffffff;"
     src="https://maps.google.com/maps?q={query}&t=&z=15&ie=UTF8&iwloc=&output=embed">
 </iframe>
 """,
@@ -369,79 +280,21 @@ def render_google_map(address: str) -> None:
     )
 
 
-def qp_get(key: str) -> str:
-    if key not in st.query_params:
-        return ""
-    value = st.query_params[key]
-    if isinstance(value, list):
-        return clean_text(value[0] if value else "")
-    return clean_text(value)
+def pick_col(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    normalized = {str(col).strip().lower(): col for col in df.columns}
+    for cand in candidates:
+        if cand in normalized:
+            return normalized[cand]
+    for key, original in normalized.items():
+        for cand in candidates:
+            if cand in key or key in cand:
+                return original
+    return None
 
 
-def qp_dump() -> dict[str, str]:
-    dumped: dict[str, str] = {}
-    for key in list(st.query_params.keys()):
-        dumped[str(key)] = qp_get(str(key))
-    return dumped
-
-
-def qp_commit(updates: dict[str, str]) -> None:
-    merged = qp_dump()
-    for key, value in updates.items():
-        merged[str(key)] = "" if value is None else str(value)
-    try:
-        st.query_params.from_dict(merged)
-    except Exception:
-        for key, value in updates.items():
-            st.query_params[str(key)] = "" if value is None else str(value)
-
-
-def lead_sid(prefix: str, idx: int, name: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")[:24]
-    return f"{prefix}{idx}_{slug}" if slug else f"{prefix}{idx}"
-
-
-def manual_url_indices() -> list[int]:
-    found: list[int] = []
-    for key in list(st.query_params.keys()):
-        match = re.fullmatch(r"new_name_(\d+)", str(key))
-        if match:
-            found.append(int(match.group(1)))
-    return sorted(set(found))
-
-
-def next_manual_index() -> int:
-    ids = manual_url_indices()
-    return (max(ids) + 1) if ids else 0
-
-
-def parse_manual_leads_from_url() -> list[dict]:
-    leads: list[dict] = []
-    for extra_i in manual_url_indices():
-        name = qp_get(f"new_name_{extra_i}")
-        address = qp_get(f"new_addr_{extra_i}")
-        if not name or not address:
-            continue
-        sid = f"m{extra_i}"
-        leads.append(
-            {
-                "idx": extra_i,
-                "sid": sid,
-                "name": name,
-                "address": address,
-                "website": normalize_website(qp_get(f"new_link_{extra_i}")),
-                "hours": normalize_hours(qp_get(f"new_hours_{extra_i}")),
-                "status": normalize_status(qp_get(f"new_status_{extra_i}") or qp_get(f"stat_{sid}")),
-                "notes": qp_get(f"new_notes_{extra_i}") or qp_get(f"note_{sid}"),
-                "src": "url",
-            }
-        )
-    return leads
-
-
-def load_csv_frame() -> pd.DataFrame:
+def load_samples_csv() -> pd.DataFrame:
     if not CSV_PATH.exists():
-        st.error(f"Could not find `{CSV_PATH.name}` next to the app.")
+        st.error("Could not find samples.csv next to the app.")
         st.stop()
     raw = CSV_PATH.read_bytes()
     try:
@@ -454,165 +307,114 @@ def load_csv_frame() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def detect_cols(df: pd.DataFrame) -> dict[str, str]:
-    cols = {
-        "name": pick_col(df, NAME_CANDIDATES),
-        "address": pick_col(df, ADDRESS_CANDIDATES),
-        "district": pick_col(df, DISTRICT_CANDIDATES),
-        "industry": pick_col(df, INDUSTRY_CANDIDATES),
-        "website": pick_col(df, WEBSITE_CANDIDATES),
-        "hours": pick_col(df, HOURS_CANDIDATES),
-        "status": pick_col(df, STATUS_CANDIDATES),
-        "notes": pick_col(df, NOTES_CANDIDATES),
-        "lat": pick_col(df, LAT_CANDIDATES),
-        "lon": pick_col(df, LON_CANDIDATES),
-    }
-    if cols["name"] is None:
-        st.error("Could not detect a company-name column.")
+def manual_indices(params: dict) -> list[int]:
+    found: list[int] = []
+    for key in params.keys():
+        match = re.fullmatch(r"new_name_(\d+)", str(key))
+        if match:
+            found.append(int(match.group(1)))
+    return sorted(set(found))
+
+
+def next_manual_index(params: dict) -> int:
+    ids = manual_indices(params)
+    return (max(ids) + 1) if ids else 0
+
+
+def leads_from_csv(df: pd.DataFrame) -> list[dict]:
+    name_col = pick_col(df, ("company-name", "company_name", "name", "firma", "company"))
+    addr_col = pick_col(df, ("street-address", "street_address", "address", "adresse", "street"))
+    link_col = pick_col(df, ("sample-link", "sample_link", "website", "url", "link"))
+    hours_col = pick_col(df, ("visiting-hours", "visiting_hours", "hours"))
+    if name_col is None or addr_col is None:
+        st.error("samples.csv needs Company-Name and Street-Address columns.")
         st.stop()
-    if cols["address"] is None:
-        st.error("Could not detect a street-address column.")
-        st.stop()
-    if cols["status"] is None:
-        df["Status"] = STATUSES[0]
-        cols["status"] = "Status"
-    if cols["notes"] is None:
-        df["Notes"] = ""
-        cols["notes"] = "Notes"
-    if cols["district"] is None:
-        df["District"] = ""
-        cols["district"] = "District"
-    if cols["industry"] is None:
-        df["Industry"] = ""
-        cols["industry"] = "Industry"
-    if cols["website"] is None:
-        df["Sample-Link"] = ""
-        cols["website"] = "Sample-Link"
-    if cols["hours"] is None:
-        df["Visiting-Hours"] = ""
-        cols["hours"] = "Visiting-Hours"
-    return cols
-
-
-def csv_edit_patch(sid: str) -> dict[str, str]:
-    name = qp_get(f"en_{sid}")
-    address = qp_get(f"ea_{sid}")
-    website = qp_get(f"ew_{sid}")
-    patch: dict[str, str] = {}
-    if name:
-        patch["name"] = name
-    if address:
-        patch["address"] = address
-    if website:
-        patch["website"] = normalize_website(website)
-    return patch
-
-
-def build_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> list[dict]:
     leads: list[dict] = []
-    for idx, row in csv_df.iterrows():
+    for idx, row in df.iterrows():
         sid = f"c{int(idx)}"
-        patch = csv_edit_patch(sid)
-        name = patch.get("name") or clean_text(row[cols["name"]])
-        address = patch.get("address") or clean_text(row[cols["address"]])
-        website = patch.get("website") or normalize_website(row[cols["website"]])
+        name = param_value(url_params, f"en_{sid}") or clean_text(row[name_col])
+        address = param_value(url_params, f"ea_{sid}") or clean_text(row[addr_col])
+        website = param_value(url_params, f"ew_{sid}") or (clean_text(row[link_col]) if link_col else "")
+        hours = clean_text(row[hours_col]) if hours_col else ""
         leads.append(
             {
                 "sid": sid,
-                "csv_idx": int(idx),
                 "extra_i": "",
                 "name": name,
                 "address": address,
-                "website": website,
-                "hours": normalize_hours(row[cols["hours"]]),
-                "status": normalize_status(qp_get(f"stat_{sid}") or row[cols["status"]]),
-                "notes": qp_get(f"note_{sid}") or clean_text(row[cols["notes"]]),
-                "district": infer_district(address, clean_text(row[cols["district"]])),
-                "industry": clean_text(row[cols["industry"]]) if cols["industry"] else "",
-                "src": "csv",
-                "lat_src": row[cols["lat"]] if cols["lat"] else "",
-                "lon_src": row[cols["lon"]] if cols["lon"] else "",
-            }
-        )
-
-    for item in parse_manual_leads_from_url():
-        address = item["address"]
-        leads.append(
-            {
-                "sid": item["sid"],
-                "csv_idx": -1,
-                "extra_i": str(item["idx"]),
-                "name": item["name"],
-                "address": address,
-                "website": item["website"],
-                "hours": item["hours"],
-                "status": item["status"],
-                "notes": item["notes"],
+                "website": normalize_website(website),
+                "hours": normalize_hours(hours),
+                "status": normalize_status(param_value(url_params, f"stat_{sid}")),
+                "notes": param_value(url_params, f"note_{sid}"),
                 "district": infer_district(address),
-                "industry": "",
-                "src": "url",
-                "lat_src": "",
-                "lon_src": "",
+                "src": "csv",
             }
         )
     return leads
 
 
-def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str) -> None:
-    next_idx = next_manual_index()
-    st.query_params[f"new_name_{next_idx}"] = add_name.strip()
-    st.query_params[f"new_addr_{next_idx}"] = add_addr.strip()
-    st.query_params[f"new_link_{next_idx}"] = normalize_website(add_link)
-    st.query_params[f"new_hours_{next_idx}"] = normalize_hours(add_hours)
-    st.rerun()
+def leads_from_url(params: dict) -> list[dict]:
+    leads: list[dict] = []
+    for extra_i in manual_indices(params):
+        name = param_value(params, f"new_name_{extra_i}")
+        address = param_value(params, f"new_addr_{extra_i}")
+        if not name or not address:
+            continue
+        sid = f"m{extra_i}"
+        leads.append(
+            {
+                "sid": sid,
+                "extra_i": str(extra_i),
+                "name": name,
+                "address": address,
+                "website": normalize_website(param_value(params, f"new_link_{extra_i}")),
+                "hours": normalize_hours(param_value(params, f"new_hours_{extra_i}")),
+                "status": normalize_status(
+                    param_value(params, f"new_status_{extra_i}") or param_value(params, f"stat_{sid}")
+                ),
+                "notes": param_value(params, f"new_notes_{extra_i}") or param_value(params, f"note_{sid}"),
+                "district": infer_district(address),
+                "src": "url",
+            }
+        )
+    return leads
 
 
-def save_lead_edits(sid: str, extra_i: str, name: str, address: str, website: str) -> None:
-    name = name.strip()
-    address = address.strip()
-    website = normalize_website(website)
-    if not name or not address:
-        st.warning("Bitte Name und Adresse ausfüllen.")
-        return
-    if extra_i != "":
-        st.query_params[f"new_name_{extra_i}"] = name
-        st.query_params[f"new_addr_{extra_i}"] = address
-        st.query_params[f"new_link_{extra_i}"] = website
-    else:
-        st.query_params[f"en_{sid}"] = name
-        st.query_params[f"ea_{sid}"] = address
-        st.query_params[f"ew_{sid}"] = website
-    st.session_state["editing_sid"] = ""
-    for key in (f"edit_name_{sid}", f"edit_addr_{sid}", f"edit_link_{sid}"):
-        st.session_state.pop(key, None)
-    st.rerun()
-
-
-def persist_status_notes(sid: str, extra_i: str, status: str, notes: str) -> None:
-    st.query_params[f"stat_{sid}"] = status
-    st.query_params[f"note_{sid}"] = notes
-    if extra_i != "":
-        st.query_params[f"new_status_{extra_i}"] = status
-        st.query_params[f"new_notes_{extra_i}"] = notes
-    st.rerun()
-
-
-inject_chrome()
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .hours-line { text-align: left; margin: 0 0 0.35rem 0; }
+    .addr-line, .district-line { display: block; margin: 0 0 0.2rem 0; line-height: 1.35; }
+    .nav-link {
+        display: inline-block;
+        font-weight: 800;
+        color: #4285F4 !important;
+        text-decoration: none;
+        font-size: 0.95rem;
+        text-align: left;
+        margin: 0.1rem 0 0.4rem 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.title("🎯 Helsinki Website Leads")
 st.markdown(
-    "Basis-Leads aus `samples.csv`. Manuelle Leads und Korrekturen stehen in der URL "
-    "(`new_name_0`, `new_addr_0`, …). Diesen Link als Lesezeichen speichern und teilen."
+    "CSV-Leads aus `samples.csv`. Manuelle Leads stehen in der URL "
+    "(`new_name_0`, `new_addr_0`, …). Nach dem Speichern den **vollen Browser-Link** als Lesezeichen sichern."
 )
 
-csv_df = load_csv_frame()
-cols = detect_cols(csv_df)
-all_leads = build_pipeline(csv_df, cols)
-manual_count = len(parse_manual_leads_from_url())
+csv_df = load_samples_csv()
+csv_leads = leads_from_csv(csv_df)
+url_leads = leads_from_url(url_params)
+all_leads = csv_leads + url_leads
 
 st.subheader("Distance")
 filter_left, filter_right = st.columns(2)
-
 with filter_left:
     home_mode = st.session_state.get("home_mode", False)
     st.slider(
@@ -624,34 +426,26 @@ with filter_left:
         disabled=home_mode,
         key="max_distance",
     )
-    st.checkbox(
-        "🏠 Home Mode (Show all prepared leads)",
-        key="home_mode",
-    )
+    st.checkbox("🏠 Home Mode (Show all prepared leads)", key="home_mode")
     home_mode = st.session_state["home_mode"]
-
 with filter_right:
     industry_keyword = st.text_input(
         "Industry Keyword Filter (e.g., Ravintola, Café, Barber)",
         key="industry_keyword",
     )
-    district_filter = st.selectbox(
-        "District Filter",
-        options=DISTRICT_OPTIONS,
-        key="district_filter",
-    )
+    district_filter = st.selectbox("District Filter", options=DISTRICT_OPTIONS, key="district_filter")
 
 origin_lat, origin_lon = HELSINKI_CENTRAL
 keyword = industry_keyword.strip().lower()
 
 enriched_rows: list[dict] = []
 for lead in all_leads:
-    lat, lon = coords_for_address(lead["address"], lead["lat_src"], lead["lon_src"])
+    lat, lon = coords_for_address(lead["address"])
     distance_m = haversine_m(origin_lat, origin_lon, lat, lon)
     if not district_matches(lead["district"], district_filter):
         continue
     if keyword:
-        blob = f"{lead['industry']} {lead['name']} {lead['address']} {lead['district']}".lower()
+        blob = f"{lead['name']} {lead['address']} {lead['district']}".lower()
         if keyword not in blob:
             continue
     if not home_mode and distance_m > float(st.session_state["max_distance"]):
@@ -669,9 +463,9 @@ enriched_rows.sort(
 st.markdown("---")
 st.subheader("Active Lead Pipeline")
 st.caption(
-    f"{len(enriched_rows)} lead(s) match the current filters "
-    f"({len(csv_df)} from samples.csv + {manual_count} from URL). "
-    "Bookmark the full browser link after adding or editing leads."
+    f"{len(enriched_rows)} lead(s) visible "
+    f"({len(csv_leads)} from samples.csv + {len(url_leads)} from URL). "
+    "Bookmark the full URL after saving a lead."
 )
 
 if not enriched_rows:
@@ -681,8 +475,6 @@ for lead in enriched_rows:
     uid = lead["sid"]
     status_key = f"status_{uid}"
     notes_key = f"notes_{uid}"
-    save_key = f"save_{uid}"
-
     if status_key not in st.session_state:
         st.session_state[status_key] = lead["status"]
     if notes_key not in st.session_state:
@@ -690,7 +482,6 @@ for lead in enriched_rows:
 
     with st.container(border=True):
         c1, c2 = st.columns([1.3, 1.0])
-
         with c1:
             editing = st.session_state.get("editing_sid") == uid
             if editing:
@@ -708,18 +499,32 @@ for lead in enriched_rows:
                 save_col, cancel_col = st.columns(2)
                 with save_col:
                     if st.button("💾 Save Changes", key=f"save_info_{uid}", type="primary", use_container_width=True):
-                        save_lead_edits(
-                            uid,
-                            lead["extra_i"],
-                            st.session_state[f"edit_name_{uid}"],
-                            st.session_state[f"edit_addr_{uid}"],
-                            st.session_state[f"edit_link_{uid}"],
-                        )
+                        new_name = st.session_state[f"edit_name_{uid}"].strip()
+                        new_addr = st.session_state[f"edit_addr_{uid}"].strip()
+                        new_link = normalize_website(st.session_state[f"edit_link_{uid}"])
+                        if new_name and new_addr:
+                            extra_i = lead["extra_i"]
+                            if extra_i != "":
+                                st.query_params.update(
+                                    {
+                                        f"new_name_{extra_i}": new_name,
+                                        f"new_addr_{extra_i}": new_addr,
+                                        f"new_link_{extra_i}": new_link,
+                                    }
+                                )
+                            else:
+                                st.query_params.update(
+                                    {
+                                        f"en_{uid}": new_name,
+                                        f"ea_{uid}": new_addr,
+                                        f"ew_{uid}": new_link,
+                                    }
+                                )
+                            st.session_state["editing_sid"] = ""
+                            st.rerun()
                 with cancel_col:
                     if st.button("❌ Cancel", key=f"cancel_info_{uid}", use_container_width=True):
                         st.session_state["editing_sid"] = ""
-                        for key in (f"edit_name_{uid}", f"edit_addr_{uid}", f"edit_link_{uid}"):
-                            st.session_state.pop(key, None)
                         st.rerun()
             else:
                 st.markdown(f"### {lead['name']}")
@@ -729,11 +534,6 @@ for lead in enriched_rows:
                 )
                 if st.button("✏️ Edit Lead Info", key=f"edit_btn_{uid}"):
                     st.session_state["editing_sid"] = uid
-                    st.session_state[f"edit_name_{uid}"] = lead["name"]
-                    st.session_state[f"edit_addr_{uid}"] = lead["address"]
-                    st.session_state[f"edit_link_{uid}"] = (
-                        "" if website_is_todo(lead["website"]) else lead["website"]
-                    )
                     st.rerun()
 
             st.markdown(
@@ -754,16 +554,15 @@ for lead in enriched_rows:
                 label_visibility="collapsed",
             )
             if chosen_status != lead["status"]:
-                persist_status_notes(uid, lead["extra_i"], chosen_status, st.session_state[notes_key])
+                payload = {f"stat_{uid}": chosen_status, f"note_{uid}": st.session_state[notes_key]}
+                if lead["extra_i"]:
+                    payload[f"new_status_{lead['extra_i']}"] = chosen_status
+                st.query_params.update(payload)
+                st.rerun()
 
             demo_href = live_website_url(lead["website"])
             if website_is_todo(lead["website"]) or not demo_href:
-                st.button(
-                    "⚠️ Website to be done",
-                    key=f"todo_web_{uid}",
-                    disabled=True,
-                    use_container_width=True,
-                )
+                st.button("⚠️ Website to be done", key=f"todo_web_{uid}", disabled=True, use_container_width=True)
             else:
                 st.link_button(
                     f"🌐 Click here to open Demo Website for {lead['name']}",
@@ -779,34 +578,47 @@ for lead in enriched_rows:
             )
             geo_url = native_geo_url(lead["latitude"], lead["longitude"])
             st.markdown(
-                f'<a class="nav-link" href="{geo_url}" target="_blank" rel="noopener noreferrer">'
-                f"🗺️ Navigation</a>",
+                f'<a class="nav-link" href="{geo_url}" target="_blank" rel="noopener noreferrer">🗺️ Navigation</a>',
                 unsafe_allow_html=True,
             )
             render_google_map(lead["address"])
 
         st.text_area("✍️ Field Notes (e.g. Email, Mobile):", key=notes_key)
-        if st.button("💾 Save Note", key=save_key, use_container_width=True, type="secondary"):
-            persist_status_notes(uid, lead["extra_i"], st.session_state[status_key], st.session_state[notes_key])
+        if st.button("💾 Save Note", key=f"save_note_{uid}", use_container_width=True, type="secondary"):
+            payload = {
+                f"stat_{uid}": st.session_state[status_key],
+                f"note_{uid}": st.session_state[notes_key],
+            }
+            if lead["extra_i"]:
+                payload[f"new_status_{lead['extra_i']}"] = st.session_state[status_key]
+                payload[f"new_notes_{lead['extra_i']}"] = st.session_state[notes_key]
+            st.query_params.update(payload)
+            st.rerun()
 
 st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
-    st.caption(
-        "Nur Name und Adresse sind Pflicht. Der Lead wird sofort in die Browser-URL geschrieben. "
-        "Danach den gesamten Link als Lesezeichen speichern."
-    )
-    add_name = st.text_input("Name des Geschäfts / Firma", key="add_name")
-    add_addr = st.text_input("Adresse (z.B. Hämeentie 38)", key="add_addr")
-    add_link = st.text_input("Website / Demo-Link (optional)", key="add_link")
-    add_hours = st.text_input("Visiting Hours (optional)", key="add_hours")
-    if st.button("➕ Lead zur Pipeline hinzufügen", key="add_lead_btn", type="primary"):
-        name = add_name.strip()
-        address = add_addr.strip()
-        if not name or not address:
-            st.warning("Bitte Name des Geschäfts und Adresse ausfüllen.")
-        else:
-            existing = {(item["name"].lower(), normalize_addr(item["address"])) for item in all_leads}
-            if (name.lower(), normalize_addr(address)) in existing:
-                st.warning("Dieser Lead ist bereits in der Pipeline.")
+    st.caption("Nur Name und Adresse sind Pflicht. Der Lead wird in die Browser-URL geschrieben.")
+    with st.form("manual_lead_form", clear_on_submit=True):
+        add_name = st.text_input("Name des Geschäfts / Firma")
+        add_addr = st.text_input("Adresse (z.B. Hämeentie 38)")
+        add_link = st.text_input("Website / Demo-Link (optional)")
+        add_hours = st.text_input("Visiting Hours (optional)")
+        submitted = st.form_submit_button(
+            "💾 LEAD DASHBOARD-WEIT SPEICHERN",
+            use_container_width=True,
+            type="primary",
+        )
+        if submitted:
+            if not add_name.strip() or not add_addr.strip():
+                st.warning("Bitte Name des Geschäfts und Adresse ausfüllen.")
             else:
-                add_manual_lead(name, address, add_link, add_hours)
+                next_idx = next_manual_index(url_params)
+                st.query_params.update(
+                    {
+                        f"new_name_{next_idx}": add_name.strip(),
+                        f"new_addr_{next_idx}": add_addr.strip(),
+                        f"new_link_{next_idx}": normalize_website(add_link),
+                        f"new_hours_{next_idx}": normalize_hours(add_hours),
+                    }
+                )
+                st.rerun()
