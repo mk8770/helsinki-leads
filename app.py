@@ -163,6 +163,10 @@ st.set_page_config(
 
 if "manual_leads" not in st.session_state:
     st.session_state["manual_leads"] = []
+if "lead_edits" not in st.session_state:
+    st.session_state["lead_edits"] = {}
+if "editing_sid" not in st.session_state:
+    st.session_state["editing_sid"] = ""
 
 
 def inject_chrome() -> None:
@@ -468,6 +472,28 @@ def next_manual_index() -> int:
     return (max(ids) + 1) if ids else 0
 
 
+def hydrate_lead_edits_from_url() -> None:
+    if "lead_edits" not in st.session_state or not isinstance(st.session_state["lead_edits"], dict):
+        st.session_state["lead_edits"] = {}
+    for key in list(st.query_params.keys()):
+        match = re.fullmatch(r"en_(.+)", str(key))
+        if not match:
+            continue
+        sid = match.group(1)
+        patch = dict(st.session_state["lead_edits"].get(sid) or {})
+        name = qp_get(f"en_{sid}")
+        address = qp_get(f"ea_{sid}")
+        website = qp_get(f"ew_{sid}")
+        if name:
+            patch["name"] = name
+        if address:
+            patch["address"] = address
+        if website:
+            patch["website"] = normalize_website(website)
+        if patch:
+            st.session_state["lead_edits"][sid] = patch
+
+
 def hydrate_manual_leads_from_url() -> None:
     if "manual_leads" not in st.session_state or st.session_state["manual_leads"] is None:
         st.session_state["manual_leads"] = []
@@ -617,6 +643,15 @@ def session_manual_rows(cols: dict[str, str]) -> list[dict[str, str]]:
                 "_extra_i": str(extra_i),
             }
         )
+        patch = (st.session_state.get("lead_edits") or {}).get(sid) or {}
+        if patch:
+            if clean_text(patch.get("name")):
+                rows[-1][cols["name"]] = clean_text(patch.get("name"))
+            if clean_text(patch.get("address")):
+                rows[-1][cols["address"]] = clean_text(patch.get("address"))
+                rows[-1][cols["district"]] = infer_district(rows[-1][cols["address"]])
+            if clean_text(patch.get("website")):
+                rows[-1][cols["website"]] = normalize_website(patch.get("website"))
     return rows
 
 
@@ -641,6 +676,14 @@ def merge_pipeline(csv_df: pd.DataFrame, cols: dict[str, str]) -> pd.DataFrame:
         )
         work.loc[idx, cols["status"]] = status
         work.loc[idx, cols["notes"]] = notes
+        patch = (st.session_state.get("lead_edits") or {}).get(clean_text(row["_sid"])) or {}
+        if patch.get("name"):
+            work.loc[idx, cols["name"]] = clean_text(patch.get("name"))
+        if patch.get("address"):
+            work.loc[idx, cols["address"]] = clean_text(patch.get("address"))
+            work.loc[idx, cols["district"]] = infer_district(clean_text(patch.get("address")))
+        if patch.get("website"):
+            work.loc[idx, cols["website"]] = normalize_website(patch.get("website"))
 
     extras = session_manual_rows(cols)
     if extras:
@@ -696,6 +739,51 @@ def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str)
     st.rerun()
 
 
+def save_lead_info(sid: str, extra_i: str, name: str, address: str, website: str) -> None:
+    name = name.strip()
+    address = address.strip()
+    website = normalize_website(website)
+    if not name or not address:
+        st.warning("Bitte Name und Adresse ausfüllen.")
+        return
+
+    patch = {"name": name, "address": address, "website": website}
+    if "lead_edits" not in st.session_state:
+        st.session_state["lead_edits"] = {}
+    st.session_state["lead_edits"][sid] = patch
+
+    if extra_i != "":
+        for lead in st.session_state.get("manual_leads", []):
+            try:
+                if int(lead.get("idx", -1)) == int(extra_i):
+                    lead["name"] = name
+                    lead["address"] = address
+                    lead["website"] = website
+                    write_manual_lead_to_url(lead)
+                    break
+            except (TypeError, ValueError):
+                continue
+
+    qp_write_many(
+        {
+            f"en_{sid}": name,
+            f"ea_{sid}": address,
+            f"ew_{sid}": website,
+        }
+    )
+    st.session_state["editing_sid"] = ""
+    for key in (f"edit_name_{sid}", f"edit_addr_{sid}", f"edit_link_{sid}"):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def cancel_lead_edit(sid: str) -> None:
+    st.session_state["editing_sid"] = ""
+    for key in (f"edit_name_{sid}", f"edit_addr_{sid}", f"edit_link_{sid}"):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
 def demo_url(name: str, website: str) -> str:
     if website.startswith(("http://", "https://")):
         return website
@@ -706,6 +794,7 @@ def demo_url(name: str, website: str) -> str:
 inject_chrome()
 forget_old_table_state()
 hydrate_manual_leads_from_url()
+hydrate_lead_edits_from_url()
 
 st.title("🎯 Helsinki Website Leads")
 st.markdown(
@@ -792,6 +881,7 @@ for idx, row in df.iterrows():
             "latitude": lat,
             "longitude": lon,
             "distance_m": distance_m,
+            "extra_i": clean_text(row["_extra_i"]),
         }
     )
 
@@ -824,11 +914,46 @@ for lead in enriched_rows:
         c1, c2 = st.columns([1.3, 1.0])
 
         with c1:
-            st.markdown(f"### {lead['name']}")
-            st.markdown(
-                f"<div class='addr-line'>📍 Address: {lead['address']}, Helsinki</div>",
-                unsafe_allow_html=True,
-            )
+            editing = st.session_state.get("editing_sid") == uid
+            if editing:
+                if f"edit_name_{uid}" not in st.session_state:
+                    st.session_state[f"edit_name_{uid}"] = lead["name"]
+                if f"edit_addr_{uid}" not in st.session_state:
+                    st.session_state[f"edit_addr_{uid}"] = lead["address"]
+                if f"edit_link_{uid}" not in st.session_state:
+                    display_link = "" if lead["website"] == WEBSITE_TODO else lead["website"]
+                    st.session_state[f"edit_link_{uid}"] = display_link
+                st.text_input("Edit Name", key=f"edit_name_{uid}")
+                st.text_input("Edit Address", key=f"edit_addr_{uid}")
+                st.text_input("Edit Website Link", key=f"edit_link_{uid}")
+                save_col, cancel_col = st.columns(2)
+                with save_col:
+                    if st.button("💾 Save Changes", key=f"save_info_{uid}", type="primary", use_container_width=True):
+                        save_lead_info(
+                            uid,
+                            lead["extra_i"],
+                            st.session_state[f"edit_name_{uid}"],
+                            st.session_state[f"edit_addr_{uid}"],
+                            st.session_state[f"edit_link_{uid}"],
+                        )
+                with cancel_col:
+                    if st.button("❌ Cancel", key=f"cancel_info_{uid}", use_container_width=True):
+                        cancel_lead_edit(uid)
+            else:
+                st.markdown(f"### {lead['name']}")
+                st.markdown(
+                    f"<div class='addr-line'>📍 Address: {lead['address']}, Helsinki</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("✏️ Edit Lead Info", key=f"edit_btn_{uid}"):
+                    st.session_state["editing_sid"] = uid
+                    st.session_state[f"edit_name_{uid}"] = lead["name"]
+                    st.session_state[f"edit_addr_{uid}"] = lead["address"]
+                    st.session_state[f"edit_link_{uid}"] = (
+                        "" if lead["website"] == WEBSITE_TODO else lead["website"]
+                    )
+                    st.rerun()
+
             st.markdown(
                 f"<div class='district-line'>🏙️ District: {lead['district']}</div>",
                 unsafe_allow_html=True,
