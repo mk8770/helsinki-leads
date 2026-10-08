@@ -150,6 +150,8 @@ STATUS_CANDIDATES = ("status", "visit status", "besuchsstatus")
 NOTES_CANDIDATES = ("notes", "notizen", "note", "field notes", "kommentar")
 LAT_CANDIDATES = ("latitude", "lat", "y")
 LON_CANDIDATES = ("longitude", "lon", "lng", "long", "x")
+WEBSITE_TODO = "Website to be done"
+HOURS_FALLBACK = "Not specified"
 
 
 st.set_page_config(
@@ -228,6 +230,19 @@ def clean_text(value: object) -> str:
     text = str(value).strip()
     if text.lower() in {"nan", "none", "null"}:
         return ""
+    return text
+
+
+def normalize_hours(raw: object) -> str:
+    text = clean_text(raw)
+    return text if text else HOURS_FALLBACK
+
+
+def normalize_website(raw: object) -> str:
+    text = clean_text(raw)
+    low = text.lower().rstrip("/")
+    if not text or low in {"https:", "http:", "https://", "http://", "https", "http"}:
+        return WEBSITE_TODO
     return text
 
 
@@ -433,8 +448,8 @@ def parse_manual_leads_from_url() -> list[dict]:
                 "idx": extra_i,
                 "name": name,
                 "address": address,
-                "website": qp_get(f"new_link_{extra_i}"),
-                "hours": qp_get(f"new_hours_{extra_i}"),
+                "website": normalize_website(qp_get(f"new_link_{extra_i}")),
+                "hours": normalize_hours(qp_get(f"new_hours_{extra_i}")),
                 "status": normalize_status(qp_get(f"new_status_{extra_i}") or qp_get(f"stat_{sid}")),
                 "notes": qp_get(f"new_notes_{extra_i}") or qp_get(f"note_{sid}"),
             }
@@ -593,8 +608,8 @@ def session_manual_rows(cols: dict[str, str]) -> list[dict[str, str]]:
                 cols["address"]: address,
                 cols["district"]: infer_district(address),
                 cols["industry"]: "",
-                cols["website"]: clean_text(lead.get("website")),
-                cols["hours"]: clean_text(lead.get("hours")),
+                cols["website"]: normalize_website(lead.get("website")),
+                cols["hours"]: normalize_hours(lead.get("hours")),
                 cols["status"]: status,
                 cols["notes"]: notes,
                 "_sid": sid,
@@ -660,12 +675,14 @@ def persist_lead(df: pd.DataFrame, cols: dict[str, str], row_idx: int, status: s
 
 def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str) -> None:
     next_idx = next_manual_index()
+    website = normalize_website(add_link)
+    hours = normalize_hours(add_hours)
     lead = {
         "idx": next_idx,
         "name": add_name.strip(),
         "address": add_addr.strip(),
-        "website": add_link.strip(),
-        "hours": add_hours.strip(),
+        "website": website,
+        "hours": hours,
         "status": STATUSES[0],
         "notes": "",
     }
@@ -674,8 +691,8 @@ def add_manual_lead(add_name: str, add_addr: str, add_link: str, add_hours: str)
     st.session_state["manual_leads"].append(lead)
     st.query_params[f"new_name_{next_idx}"] = add_name.strip()
     st.query_params[f"new_addr_{next_idx}"] = add_addr.strip()
-    st.query_params[f"new_link_{next_idx}"] = add_link.strip()
-    st.query_params[f"new_hours_{next_idx}"] = add_hours.strip()
+    st.query_params[f"new_link_{next_idx}"] = website
+    st.query_params[f"new_hours_{next_idx}"] = hours
     st.rerun()
 
 
@@ -746,8 +763,8 @@ for idx, row in df.iterrows():
     name = clean_text(row[cols["name"]])
     district = infer_district(address, clean_text(row[cols["district"]]))
     industry = clean_text(row[cols["industry"]])
-    website = clean_text(row[cols["website"]])
-    hours = clean_text(row[cols["hours"]]) or "—"
+    website = normalize_website(row[cols["website"]])
+    hours = normalize_hours(row[cols["hours"]])
     status = normalize_status(row[cols["status"]])
     notes = clean_text(row[cols["notes"]])
 
@@ -833,12 +850,20 @@ for lead in enriched_rows:
                 persist_lead(df, cols, row_idx, chosen_status, st.session_state[notes_key])
                 st.rerun()
 
-            st.link_button(
-                f"🌐 Click here to open Demo Website for {lead['name']}",
-                url=demo_url(lead["name"], lead["website"]),
-                type="primary",
-                use_container_width=True,
-            )
+            if lead["website"] == WEBSITE_TODO:
+                st.button(
+                    "⚠️ Website to be done",
+                    key=f"todo_web_{uid}",
+                    disabled=True,
+                    use_container_width=True,
+                )
+            else:
+                st.link_button(
+                    f"🌐 Click here to open Demo Website for {lead['name']}",
+                    url=demo_url(lead["name"], lead["website"]),
+                    type="primary",
+                    use_container_width=True,
+                )
 
         with c2:
             st.markdown(
@@ -870,11 +895,14 @@ for lead in enriched_rows:
 
 st.markdown("---")
 with st.expander("➕ Neuen Lead manuell hinzufügen", expanded=False):
-    st.caption("Neue Leads werden in Session und URL gespeichert (`new_name_0`, `new_addr_0`, …).")
+    st.caption(
+        "Nur Name und Adresse sind Pflicht. Website und Visiting Hours sind freiwillig "
+        "(beliebiges Textformat, z. B. 12.00-24.00 oder Abends)."
+    )
     add_name = st.text_input("Name des Geschäfts / Firma", key="add_name")
     add_addr = st.text_input("Adresse (z.B. Hämeentie 38)", key="add_addr")
-    add_link = st.text_input("Website / Demo-Link", key="add_link")
-    add_hours = st.text_input("Visiting Hours", key="add_hours")
+    add_link = st.text_input("Website / Demo-Link (optional)", key="add_link")
+    add_hours = st.text_input("Visiting Hours (optional)", key="add_hours")
     if st.button("➕ Lead zur Pipeline hinzufügen", key="add_lead_btn", type="primary"):
         name = add_name.strip()
         address = add_addr.strip()
